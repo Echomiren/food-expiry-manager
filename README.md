@@ -1,7 +1,7 @@
 # 食品過期管理
 
 🔗 線上使用  
-https://michael791002.github.io/food-expiry-manager/
+https://echomiren.github.io/food-expiry-manager/
 
 一個用來管理食品保存期限與到期提醒的簡易工具，適合個人、家庭、公司冰箱或其他多人共用情境。
 
