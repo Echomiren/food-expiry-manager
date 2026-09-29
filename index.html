@@ -292,6 +292,53 @@ body.ocr-dialog-lock{
   margin-bottom:6px;
 }
 
+.list-pagination{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  flex-wrap:wrap;
+  margin-top:10px;
+  padding-top:10px;
+  border-top:1px solid #e6e9ee;
+}
+.list-page-size{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  font-size:12px;
+  color:#667085;
+}
+.list-page-size select{
+  width:auto;
+  min-width:72px;
+  padding:7px 9px;
+  margin:0;
+}
+.list-page-nav{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin-left:auto;
+}
+.list-page-nav button{
+  width:auto;
+  padding:7px 10px;
+  font-size:12px;
+}
+.list-page-indicator{
+  min-width:58px;
+  text-align:center;
+  font-size:12px;
+  color:#667085;
+}
+@media(max-width:520px){
+  .list-pagination{align-items:stretch}
+  .list-page-size{width:100%;justify-content:flex-end}
+  .list-page-nav{width:100%;margin-left:0;justify-content:space-between}
+  .list-page-nav button{flex:1}
+}
+
 .food.compact-food{
   display:block;
   padding:10px 12px;
@@ -703,6 +750,9 @@ html[data-theme="dark"] .danger-zone{
   border-color:#6b3a3f;
 }
 html[data-theme="dark"] .calendar-detail{border-color:#33404d}
+html[data-theme="dark"] .list-pagination{border-color:#33404d}
+html[data-theme="dark"] .list-page-size,
+html[data-theme="dark"] .list-page-indicator{color:#9eabb9}
 html[data-theme="dark"] .calendar-detail-empty,
 html[data-theme="dark"] .empty{color:#768697}
 html[data-theme="dark"] .ocr-preview-wrap{background:#080b0f}
@@ -1631,6 +1681,22 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 
         <div id="foodListCount" class="list-result-count"></div>
         <div id="listView"></div>
+        <div id="foodPagination" class="list-pagination hidden">
+          <div class="list-page-size">
+            <label for="foodPageSize" style="margin:0">每頁</label>
+            <select id="foodPageSize" aria-label="每頁顯示筆數">
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+            <span>筆</span>
+          </div>
+          <div id="foodPageNav" class="list-page-nav">
+            <button id="foodPrevPage" class="ghost" type="button">← 上一頁</button>
+            <span id="foodPageIndicator" class="list-page-indicator">1 / 1</span>
+            <button id="foodNextPage" class="ghost" type="button">下一頁 →</button>
+          </div>
+        </div>
       </div>
 
       <div id="calendarView" class="hidden">
@@ -1898,6 +1964,11 @@ let calendarMode = localStorage.getItem(CALENDAR_MODE_KEY) === 'week'
   : 'month';
 let selectedCalendarDate = '';
 
+const FOOD_PAGE_SIZE_KEY = 'food-expiry-list-page-size-v1';
+const savedFoodPageSize = Number(localStorage.getItem(FOOD_PAGE_SIZE_KEY));
+let foodPageSize = [10,20,50].includes(savedFoodPageSize) ? savedFoodPageSize : 10;
+let foodCurrentPage = 1;
+
 let pendingChanges = [];
 let syncTimer = null;
 let syncing = false;
@@ -1988,6 +2059,11 @@ const I18N_EN = {
   "到期日曆": "Expiry calendar",
   "搜尋食品名稱…": "Search food name…",
   "篩選": "Filter",
+  "每頁": "Per page",
+  "每頁顯示筆數": "Items per page",
+  "筆": "items",
+  "← 上一頁": "← Previous",
+  "下一頁 →": "Next →",
   "全部到期狀態": "All expiry statuses",
   "已過期": "Expired",
   "3 天內": "Within 3 days",
@@ -2238,6 +2314,8 @@ function translateUiString(value) {
   if((m=core.match(/^你好，(.+)（(.+)）$/))) return `${leading}Hello, ${m[1]} (${m[2]})${trailing}`;
   if((m=core.match(/^共 (\d+) 項$/))) return `${leading}${m[1]} item${m[1]==='1'?'':'s'}${trailing}`;
   if((m=core.match(/^顯示 (\d+) \/ (\d+) 項$/))) return `${leading}Showing ${m[1]} / ${m[2]} items${trailing}`;
+  if((m=core.match(/^共 (\d+) 項 · 顯示 (\d+)–(\d+) 項$/))) return `${leading}${m[1]} items · Showing ${m[2]}–${m[3]}${trailing}`;
+  if((m=core.match(/^符合 (\d+) \/ (\d+) 項 · 顯示 (\d+)–(\d+) 項$/))) return `${leading}${m[1]} of ${m[2]} items · Showing ${m[3]}–${m[4]}${trailing}`;
   if((m=core.match(/^剩 (\d+) 天$/))) return `${leading}${m[1]} day${m[1]==='1'?'':'s'} left${trailing}`;
   if((m=core.match(/^已過期 (\d+) 天$/))) return `${leading}Expired ${m[1]} day${m[1]==='1'?'':'s'} ago${trailing}`;
   if((m=core.match(/^待同步 (\d+)$/))) return `${leading}${m[1]} pending sync${trailing}`;
@@ -3019,6 +3097,7 @@ $('familySelect').onchange=async()=>{
   });
 
   currentFamilyId=$('familySelect').value;
+  foodCurrentPage=1;
   loadFamily();
 };
 
@@ -4732,23 +4811,36 @@ function renderList() {
 
   const sorted=getFilteredFoods();
   const total=foods.length;
+  const filteredTotal=sorted.length;
+  const totalPages=Math.max(1,Math.ceil(filteredTotal/foodPageSize));
 
-  $('foodListCount').textContent=
-    sorted.length===total
-      ? `共 ${total} 項`
-      : `顯示 ${sorted.length} / ${total} 項`;
+  // 刪除 / 篩選後若目前頁超出範圍，自動回到最後一個有效頁面。
+  foodCurrentPage=Math.min(Math.max(1,foodCurrentPage),totalPages);
+
+  const startIndex=(foodCurrentPage-1)*foodPageSize;
+  const endIndex=Math.min(startIndex+foodPageSize,filteredTotal);
+  const pageFoods=sorted.slice(startIndex,endIndex);
 
   if(!total) {
+    $('foodListCount').textContent='共 0 項';
     box.innerHTML='<div class="empty">目前沒有食品資料</div>';
+    show('foodPagination',false);
     return;
   }
 
-  if(!sorted.length) {
+  if(!filteredTotal) {
+    $('foodListCount').textContent=`顯示 0 / ${total} 項`;
     box.innerHTML='<div class="empty">沒有符合目前搜尋或篩選條件的食品</div>';
+    show('foodPagination',false);
     return;
   }
 
-  box.innerHTML=sorted.map(f=>{
+  $('foodListCount').textContent=
+    filteredTotal===total
+      ? `共 ${total} 項 · 顯示 ${startIndex+1}–${endIndex} 項`
+      : `符合 ${filteredTotal} / ${total} 項 · 顯示 ${startIndex+1}–${endIndex} 項`;
+
+  box.innerHTML=pageFoods.map(f=>{
     const [c,t]=badgeInfo(daysLeft(f.expiry));
 
     return `
@@ -4810,8 +4902,17 @@ function renderList() {
     `;
   }).join('');
 
+  // 每頁筆數設定保存在 localStorage，不會同步到 Google Sheet / 其他裝置。
+  // 有資料時固定顯示每頁筆數設定；只有一頁時隱藏上一頁 / 下一頁導覽。
+  show('foodPagination',true);
+  show('foodPageNav',totalPages>1);
+  $('foodPageSize').value=String(foodPageSize);
+  $('foodPageIndicator').textContent=`${foodCurrentPage} / ${totalPages}`;
+  $('foodPrevPage').disabled=foodCurrentPage<=1;
+  $('foodNextPage').disabled=foodCurrentPage>=totalPages;
+
   observeFoodImages(box);
-  prefetchFoodImages(sorted,4);
+  prefetchFoodImages(pageFoods,4);
 }
 
 function localDateIso(date) {
@@ -5100,19 +5201,53 @@ function render() {
   renderCalendar();
 }
 
-$('foodSearch').addEventListener('input',renderList);
+$('foodSearch').addEventListener('input',()=>{
+  foodCurrentPage=1;
+  renderList();
+});
 
 $('foodFilterToggle').onclick=()=>{
   $('foodFilterPanel').classList.toggle('hidden');
 };
 
-$('foodExpiryFilter').onchange=renderList;
-$('foodLocationFilter').onchange=renderList;
+$('foodExpiryFilter').onchange=()=>{
+  foodCurrentPage=1;
+  renderList();
+};
+$('foodLocationFilter').onchange=()=>{
+  foodCurrentPage=1;
+  renderList();
+};
+
+$('foodPageSize').value=String(foodPageSize);
+$('foodPageSize').onchange=()=>{
+  const next=Number($('foodPageSize').value);
+  foodPageSize=[10,20,50].includes(next) ? next : 10;
+  foodCurrentPage=1;
+  try { localStorage.setItem(FOOD_PAGE_SIZE_KEY,String(foodPageSize)); } catch(_) {}
+  renderList();
+};
+
+$('foodPrevPage').onclick=()=>{
+  if(foodCurrentPage<=1) return;
+  foodCurrentPage--;
+  renderList();
+  $('listSection').scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+$('foodNextPage').onclick=()=>{
+  const totalPages=Math.max(1,Math.ceil(getFilteredFoods().length/foodPageSize));
+  if(foodCurrentPage>=totalPages) return;
+  foodCurrentPage++;
+  renderList();
+  $('listSection').scrollIntoView({behavior:'smooth',block:'start'});
+};
 
 $('foodFilterClear').onclick=()=>{
   $('foodSearch').value='';
   $('foodExpiryFilter').value='all';
   $('foodLocationFilter').value='all';
+  foodCurrentPage=1;
   renderList();
 };
 
