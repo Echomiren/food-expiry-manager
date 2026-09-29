@@ -1350,7 +1350,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-mobile-header-20260928">
+<div class="app" data-build="v4.4-sync-idempotency-20260929">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -1884,6 +1884,7 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbxMp1YIOLoc2WIFO5lL7Ebu
 const TOKEN_KEY = 'food-family-session-v3';
 const LAST_EMAIL_KEY = 'food-family-last-email-v1';
 const SYNC_DELAY_MS = 30000;
+const SYNC_REQUEST_TIMEOUT_MS = 60000;
 
 let token = localStorage.getItem(TOKEN_KEY) || '';
 let me = null;
@@ -2667,19 +2668,46 @@ async function syncPending() {
 
   setSyncState('syncing','同步中…');
 
-  const batch = pendingChanges.slice();
+  // 深拷貝本次送出的內容。同步等待期間若使用者又編輯同一筆資料，
+  // pendingChanges 會保留較新的版本，不會被舊回應誤刪或覆蓋。
+  const batch = pendingChanges.map(ch =>
+    JSON.parse(JSON.stringify(ch))
+  );
+
+  const sentSnapshotByKey = new Map(
+    batch.map(ch => [ch.clientKey, JSON.stringify(ch)])
+  );
 
   try {
     const r = await api('syncChanges', {
       familyId: currentFamilyId,
       changes: JSON.stringify(batch)
-    }, 30000);
+    }, SYNC_REQUEST_TIMEOUT_MS);
 
     const appliedKeys = new Set((r.applied || []).map(x=>x.clientKey));
-    pendingChanges = pendingChanges.filter(ch => !appliedKeys.has(ch.clientKey));
+    const changedDuringSyncKeys = new Set();
+
+    for(const ch of pendingChanges) {
+      if(!appliedKeys.has(ch.clientKey)) continue;
+
+      const sent=sentSnapshotByKey.get(ch.clientKey);
+      if(sent!=null && JSON.stringify(ch)!==sent) {
+        changedDuringSyncKeys.add(ch.clientKey);
+      }
+    }
+
+    pendingChanges = pendingChanges.filter(ch =>
+      !appliedKeys.has(ch.clientKey) ||
+      changedDuringSyncKeys.has(ch.clientKey)
+    );
 
     // 後端回傳正式資料，直接套回本地，包含 tmp id -> 正式 id。
+    // 若同一筆在等待回應期間又被編輯，先保留本機最新版，下一輪同步再套用。
     for (const item of (r.items || [])) {
+      if(item.clientKey && changedDuringSyncKeys.has(item.clientKey)) {
+        continue;
+      }
+
       if (item.tempId) {
         const f = foods.find(x=>x.id===item.tempId);
         if (f) {
@@ -4336,7 +4364,7 @@ $('addBtn').onclick=()=>{
     foods.push(food);
 
     queueChange({
-      clientKey:uid(),
+      clientKey:requestUid(),
       type:'add',
       tempId,
       food:clientFoodPayload(food)
@@ -4387,7 +4415,7 @@ window.consume=id=>{
       else setSyncState('synced','已同步');
     } else {
       queueChange({
-        clientKey:uid(),type:'delete',id,
+        clientKey:requestUid(),type:'delete',id,
         expectedUpdatedAt:f.updatedAt||''
       });
     }
@@ -4397,7 +4425,7 @@ window.consume=id=>{
     scheduleSync();
   } else {
     queueChange({
-      clientKey:uid(),
+      clientKey:requestUid(),
       type:'update',
       id,
       expectedUpdatedAt:f.updatedAt||'',
@@ -4443,7 +4471,7 @@ window.removeFood=id=>{
     else setSyncState('synced','已同步');
   } else {
     queueChange({
-      clientKey:uid(),
+      clientKey:requestUid(),
       type:'delete',
       id,
       expectedUpdatedAt:f?.updatedAt||''
@@ -4540,7 +4568,7 @@ $('editSaveBtn').onclick=()=>{
     scheduleSync();
   } else {
     queueChange({
-      clientKey:uid(),
+      clientKey:requestUid(),
       type:'update',
       id,
       expectedUpdatedAt:oldUpdatedAt,
