@@ -1437,7 +1437,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-20260930">
+<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-retry-20260930">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -2644,37 +2644,98 @@ startI18nObserver();
 applyLanguage(uiLanguage,{persist:false});
 
 
-async function api(action, data = {}, timeoutMs = 25000) {
-  const body = new URLSearchParams({ action, ...data });
-  if (token) body.set('sessionToken', token);
+const API_RETRY_ATTEMPTS = {
+  // 純讀取：遇到 Apps Script ContentService 暫時性 404 / 網路錯誤可安全重試。
+  me: 3,
+  listFoods: 3,
+  familyDetails: 3,
+  getNotificationSettings: 3,
+  getFoodImage: 3,
+  checkRequest: 3,
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 食品同步已有 clientKey / RequestLog 防重複，可安全多試一次。
+  syncChanges: 2
+};
+const API_RETRY_DELAYS_MS = [1500, 3200];
+const API_TRANSIENT_HTTP_STATUS = new Set([404,408,425,429,500,502,503,504]);
 
-  try {
-    const r = await fetch(API_URL, {
-      method:'POST',
-      body,
-      signal:controller.signal
-    });
+function apiSleep(ms) {
+  return new Promise(resolve=>setTimeout(resolve,ms));
+}
 
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-
-    const obj = await r.json();
-
-    if (!obj.ok) {
-      const e = new Error(obj.error || '操作失敗');
-      e.apiError = true;
-      throw e;
-    }
-
-    return obj;
-  } catch (e) {
-    if (e.name === 'AbortError') throw new Error('連線逾時，請稍後再試。');
-    throw e;
-  } finally {
-    clearTimeout(timer);
+function isTransientApiError(e) {
+  if(!e || e.apiError) return false;
+  if(e.isTimeout) return true;
+  if(Number.isFinite(e.httpStatus)) {
+    return API_TRANSIENT_HTTP_STATUS.has(e.httpStatus);
   }
+  // fetch() 的連線 / DNS / CORS 暫時性失敗通常是 TypeError；
+  // 若 Google 回了非 JSON 內容，r.json() 會是 SyntaxError。
+  return e.name==='TypeError' || e.name==='SyntaxError';
+}
+
+async function api(action, data = {}, timeoutMs = 25000) {
+  const maxAttempts = API_RETRY_ATTEMPTS[action] || 1;
+
+  for(let attempt=1; attempt<=maxAttempts; attempt++) {
+    const body = new URLSearchParams({ action, ...data });
+    if (token) body.set('sessionToken', token);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const r = await fetch(API_URL, {
+        method:'POST',
+        body,
+        signal:controller.signal
+      });
+
+      if (!r.ok) {
+        const e = new Error('HTTP ' + r.status);
+        e.httpStatus = r.status;
+        throw e;
+      }
+
+      const obj = await r.json();
+
+      if (!obj.ok) {
+        const e = new Error(obj.error || '操作失敗');
+        e.apiError = true;
+        throw e;
+      }
+
+      return obj;
+    } catch (rawError) {
+      let e=rawError;
+
+      if (rawError && rawError.name === 'AbortError') {
+        e = new Error('連線逾時，請稍後再試。');
+        e.isTimeout = true;
+      }
+
+      const shouldRetry =
+        attempt < maxAttempts &&
+        isTransientApiError(e);
+
+      if(!shouldRetry) throw e;
+
+      const delay = API_RETRY_DELAYS_MS[
+        Math.min(attempt-1,API_RETRY_DELAYS_MS.length-1)
+      ];
+
+      console.warn(
+        `[API] ${action} 暫時失敗，${delay}ms 後重試 (${attempt}/${maxAttempts})`,
+        e.message
+      );
+
+      await apiSleep(delay);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  throw new Error('連線失敗，請稍後再試。');
 }
 
 function show(id,on=true){ $(id).classList.toggle('hidden',!on); }
