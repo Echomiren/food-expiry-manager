@@ -625,6 +625,192 @@ body.ocr-dialog-lock{
 .settings-menu .menu-action:first-of-type{margin-top:0}
 .settings-menu .menu-action.secondary{text-align:center}
 
+/* 系統管理介面 */
+#adminDialog{
+  max-width:1000px;
+  width:calc(100% - 24px);
+}
+.admin-modal{
+  max-height:min(88vh,860px);
+  overflow:auto;
+}
+.admin-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+}
+.admin-head h2{margin:0}
+.admin-close{
+  width:36px!important;
+  height:36px;
+  min-width:36px;
+  padding:0!important;
+  font-size:20px;
+}
+.admin-tabs{
+  display:flex;
+  gap:7px;
+  flex-wrap:wrap;
+  margin-bottom:14px;
+}
+.admin-tabs button{
+  width:auto;
+  padding:8px 12px;
+}
+.admin-summary-grid{
+  display:grid;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:10px;
+}
+.admin-stat{
+  border:1px solid #e4e8ee;
+  border-radius:12px;
+  padding:14px;
+  background:#fbfcfd;
+}
+.admin-stat-value{
+  font-size:24px;
+  font-weight:900;
+  line-height:1.15;
+}
+.admin-stat-label{
+  margin-top:5px;
+  font-size:12px;
+  color:#667085;
+  font-weight:700;
+}
+.admin-note{
+  margin-top:12px;
+  padding:10px 12px;
+  border-radius:10px;
+  background:#f6f8fa;
+  color:#52606f;
+  font-size:12px;
+  line-height:1.6;
+}
+.admin-toolbar{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  flex-wrap:wrap;
+  margin-bottom:10px;
+}
+.admin-toolbar input[type="search"],
+.admin-toolbar input[type="email"]{
+  flex:1 1 260px;
+}
+.admin-toolbar select{
+  width:auto;
+  min-width:90px;
+}
+.admin-toolbar button{
+  width:auto;
+}
+.admin-table-wrap{
+  width:100%;
+  overflow:auto;
+  border:1px solid #e4e8ee;
+  border-radius:12px;
+}
+.admin-table{
+  width:100%;
+  min-width:760px;
+  border-collapse:collapse;
+  font-size:12px;
+}
+.admin-table th,
+.admin-table td{
+  padding:9px 10px;
+  border-bottom:1px solid #edf0f3;
+  text-align:left;
+  vertical-align:top;
+}
+.admin-table th{
+  position:sticky;
+  top:0;
+  z-index:1;
+  background:#f7f9fb;
+  color:#566273;
+  font-size:11px;
+  white-space:nowrap;
+}
+.admin-table tr:last-child td{border-bottom:0}
+.admin-table .mono{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:11px;
+}
+.admin-table .muted-cell{color:#7a8797}
+.admin-pagination{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  margin-top:10px;
+}
+.admin-pagination button{width:auto}
+.admin-empty{
+  padding:24px 12px;
+  text-align:center;
+  color:#667085;
+}
+.admin-users-list{
+  display:grid;
+  gap:8px;
+  margin-top:12px;
+}
+.admin-user-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:10px 12px;
+  border:1px solid #e4e8ee;
+  border-radius:12px;
+}
+.admin-user-main{min-width:0}
+.admin-user-name{
+  font-weight:800;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.admin-user-email{
+  color:#667085;
+  font-size:12px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.admin-user-row button{
+  width:auto;
+  flex:0 0 auto;
+}
+.admin-retention{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:12px;
+}
+.admin-retention .badge{margin-top:0}
+
+@media(max-width:800px){
+  .admin-summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:560px){
+  #adminDialog{width:calc(100% - 12px)}
+  .admin-modal{padding:14px}
+  .admin-summary-grid{grid-template-columns:1fr 1fr}
+  .admin-tabs{
+    display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr));
+  }
+  .admin-tabs button{width:100%}
+  .admin-toolbar input[type="search"],
+  .admin-toolbar input[type="email"]{flex-basis:100%}
+  .admin-user-row{align-items:flex-start;flex-direction:column}
+  .admin-user-row button{width:100%}
+}
+
 @media(max-width:800px){
   .topbar .right{width:100%}
   .topbar .right .syncbar{flex:1 1 auto}
@@ -785,6 +971,26 @@ html[data-theme="dark"] .ocr-preview-wrap{background:#080b0f}
 html[data-theme="dark"] .ocr-debug-card canvas,
 html[data-theme="dark"] .ocr-debug-card img{background:#fff}
 html[data-theme="dark"] .settings-section-title{color:#9eabb9}
+html[data-theme="dark"] .admin-stat,
+html[data-theme="dark"] .admin-note,
+html[data-theme="dark"] .admin-table th{
+  background:#111a23;
+  border-color:#354351;
+  color:#d7e0e8;
+}
+html[data-theme="dark"] .admin-table-wrap,
+html[data-theme="dark"] .admin-user-row{
+  border-color:#354351;
+}
+html[data-theme="dark"] .admin-table td{
+  border-color:#2d3946;
+}
+html[data-theme="dark"] .admin-stat-label,
+html[data-theme="dark"] .admin-user-email,
+html[data-theme="dark"] .admin-empty,
+html[data-theme="dark"] .admin-table .muted-cell{
+  color:#9eabb9;
+}
 
 
 /* v4.4 物品照片 */
@@ -1437,7 +1643,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-retry-20260930">
+<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-retry-admin-20260930">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -1583,6 +1789,11 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
           <div class="settings-section">
             <div class="settings-section-title">提醒</div>
             <button id="notificationBtn" class="ghost menu-action" type="button">Email 提醒設定</button>
+          </div>
+
+          <div id="adminSettingsSection" class="settings-section hidden">
+            <div class="settings-section-title">系統</div>
+            <button id="adminBtn" class="ghost menu-action" type="button">系統管理</button>
           </div>
 
           <div class="settings-section">
@@ -2007,6 +2218,70 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
   </div>
 </dialog>
 
+<dialog id="adminDialog">
+  <div class="modal admin-modal">
+    <div class="admin-head">
+      <div>
+        <h2>系統管理</h2>
+        <div class="small">僅系統管理者可查看</div>
+      </div>
+      <button id="adminCloseBtn" class="ghost admin-close" type="button" aria-label="關閉系統管理">×</button>
+    </div>
+
+    <div class="admin-tabs">
+      <button id="adminTabOverview" class="active" type="button">系統概況</button>
+      <button id="adminTabActivity" class="inactive" type="button">活動紀錄</button>
+      <button id="adminTabNotification" class="inactive" type="button">通知紀錄</button>
+      <button id="adminTabRequest" class="inactive" type="button">系統請求</button>
+      <button id="adminTabAdmins" class="inactive" type="button">管理者</button>
+    </div>
+
+    <div id="adminStatus" class="status"></div>
+
+    <div id="adminOverviewPanel">
+      <div id="adminSummaryBody">
+        <div class="family-loading">
+          <div class="spinner"></div>
+          <h3>正在載入系統資料…</h3>
+        </div>
+      </div>
+    </div>
+
+    <div id="adminLogPanel" class="hidden">
+      <div class="admin-toolbar">
+        <input id="adminLogSearch" type="search" autocomplete="off" placeholder="搜尋使用者、群組、食品、動作…">
+        <select id="adminLogPageSize" aria-label="每頁顯示筆數">
+          <option value="20">20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select>
+        <button id="adminLogSearchBtn" class="ghost" type="button">搜尋</button>
+        <button id="adminLogRefreshBtn" class="ghost" type="button">重新整理</button>
+      </div>
+
+      <div id="adminLogCount" class="list-result-count"></div>
+      <div id="adminLogBody"></div>
+
+      <div class="admin-pagination">
+        <button id="adminLogPrevBtn" class="ghost" type="button">← 上一頁</button>
+        <span id="adminLogPageIndicator" class="list-page-indicator">1 / 1</span>
+        <button id="adminLogNextBtn" class="ghost" type="button">下一頁 →</button>
+      </div>
+    </div>
+
+    <div id="adminUsersPanel" class="hidden">
+      <div class="admin-note">
+        新增管理者前，對方必須先註冊食品管理帳號。管理權限會由 Apps Script 後端再次驗證，不只是隱藏前端按鈕。
+      </div>
+      <div class="admin-toolbar" style="margin-top:12px">
+        <input id="adminAddEmail" type="email" autocomplete="off" placeholder="輸入已註冊的 Email">
+        <button id="adminAddBtn" type="button">新增管理者</button>
+      </div>
+      <div id="adminUsersBody"></div>
+    </div>
+  </div>
+</dialog>
+
 </div>
 
 <script>
@@ -2042,6 +2317,14 @@ let familyManageLoading = false;
 let notificationLoading = false;
 let notificationSettings = null;
 let loadFailed = false;
+
+let adminCurrentTab = 'overview';
+let adminLogType = 'activity';
+let adminLogPage = 1;
+let adminLogPageSize = 20;
+let adminLogQuery = '';
+let adminLastLogResult = null;
+let adminLogRequestSeq = 0;
 
 const $ = id => document.getElementById(id);
 
@@ -2085,6 +2368,57 @@ const I18N_EN = {
   "群組設定": "Group settings",
   "提醒": "Reminders",
   "Email 提醒設定": "Email reminder settings",
+  "系統": "System",
+  "系統管理": "System administration",
+  "僅系統管理者可查看": "System administrators only",
+  "關閉系統管理": "Close system administration",
+  "系統概況": "Overview",
+  "活動紀錄": "Activity log",
+  "通知紀錄": "Notification log",
+  "系統請求": "System requests",
+  "管理者": "Administrators",
+  "正在載入系統資料…": "Loading system data…",
+  "搜尋使用者、群組、食品、動作…": "Search users, groups, foods, actions…",
+  "搜尋": "Search",
+  "重新整理": "Refresh",
+  "新增管理者": "Add administrator",
+  "輸入已註冊的 Email": "Enter a registered email",
+  "新增管理者前，對方必須先註冊食品管理帳號。管理權限會由 Apps Script 後端再次驗證，不只是隱藏前端按鈕。": "The user must already have a Food Expiry Manager account. Administrator access is verified again by the Apps Script backend, not merely hidden in the UI.",
+  "使用者": "Users",
+  "群組數": "Groups",
+  "使用中的食品": "Active foods",
+  "已用完食品": "Consumed foods",
+  "有效工作階段": "Active sessions",
+  "活動紀錄筆數": "Activity log entries",
+  "系統請求筆數": "Request log entries",
+  "通知紀錄筆數": "Notification log entries",
+  "管理者數": "Administrators",
+  "目前沒有紀錄": "No records",
+  "時間": "Time",
+  "使用者名稱": "User",
+  "Email": "Email",
+  "動作": "Action",
+  "對象": "Target",
+  "食品": "Food",
+  "到期": "Expiry",
+  "提前天數": "Days before",
+  "狀態": "Status",
+  "Request ID": "Request ID",
+  "建立時間": "Created",
+  "更新時間": "Updated",
+  "移除管理者": "Remove administrator",
+  "自己": "You",
+  "建立群組": "Create group",
+  "加入群組": "Join group",
+  "修改群組名稱": "Rename group",
+  "重新產生邀請碼": "Regenerate invite code",
+  "變更成員權限": "Change member role",
+  "移除成員": "Remove member",
+  "離開群組": "Leave group",
+  "新增食品": "Add food",
+  "修改食品": "Update food",
+  "刪除食品": "Delete food",
+  "未知動作": "Unknown action",
   "登出": "Sign out",
   "建立或加入群組": "Create or join a group",
   "建立新群組": "Create new group",
@@ -2632,7 +2966,7 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Escape') setSettingsMenu(false);
 });
 
-['groupAddBtn','familyManageBtn','notificationBtn','logoutBtn']
+['groupAddBtn','familyManageBtn','notificationBtn','adminBtn','logoutBtn']
   .forEach(id=>{
     $(id).addEventListener('click',()=>{
       setSettingsMenu(false);
@@ -2652,6 +2986,9 @@ const API_RETRY_ATTEMPTS = {
   getNotificationSettings: 3,
   getFoodImage: 3,
   checkRequest: 3,
+  adminSummary: 3,
+  adminLogs: 3,
+  adminListAdmins: 3,
 
   // 食品同步已有 clientKey / RequestLog 防重複，可安全多試一次。
   syncChanges: 2
@@ -3110,9 +3447,14 @@ $('resetPasswordBtn').onclick=async()=>{
   }
 };
 
+function refreshAdminMenu() {
+  show('adminSettingsSection',Boolean(me && me.isAdmin));
+}
+
 function enterMain() {
   show('splash',false); show('authCard',false); show('mainApp',true);
   $('hello').textContent=`你好，${me.displayName}（${me.email}）`;
+  refreshAdminMenu();
   renderFamilies(me.families||[]);
 }
 
@@ -5927,6 +6269,469 @@ $('modalJoinGroupBtn').onclick=async()=>{
 };
 
 
+// -------- 系統管理 --------
+
+function adminActionLabel(action) {
+  const labels={
+    family_create:'建立群組',
+    family_join:'加入群組',
+    family_rename:'修改群組名稱',
+    invite_regenerate:'重新產生邀請碼',
+    member_role:'變更成員權限',
+    member_remove:'移除成員',
+    family_leave:'離開群組',
+    food_add:'新增食品',
+    food_update:'修改食品',
+    food_delete:'刪除食品'
+  };
+  const label=labels[String(action||'')] || String(action||'未知動作');
+  return translateUiString(label);
+}
+
+function adminFormatTime(value) {
+  if(!value) return '—';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString(
+    uiLanguage==='en' ? 'en-US' : 'zh-TW',
+    {
+      year:'numeric',
+      month:'2-digit',
+      day:'2-digit',
+      hour:'2-digit',
+      minute:'2-digit',
+      second:'2-digit'
+    }
+  );
+}
+
+function adminPersonText(item) {
+  const name=String(item.userName||'').trim();
+  const email=String(item.userEmail||'').trim();
+  if(name && email) return `${name} (${email})`;
+  return name || email || (item.userId ? String(item.userId).slice(0,8)+'…' : '—');
+}
+
+function setAdminTab(tab) {
+  adminCurrentTab=tab;
+
+  const tabs={
+    overview:'adminTabOverview',
+    activity:'adminTabActivity',
+    notification:'adminTabNotification',
+    request:'adminTabRequest',
+    admins:'adminTabAdmins'
+  };
+
+  Object.entries(tabs).forEach(([key,id])=>{
+    $(id).className=key===tab?'active':'inactive';
+  });
+
+  show('adminOverviewPanel',tab==='overview');
+  show('adminLogPanel',['activity','notification','request'].includes(tab));
+  show('adminUsersPanel',tab==='admins');
+
+  if(tab==='overview') {
+    loadAdminSummary();
+  } else if(tab==='admins') {
+    loadAdminUsers();
+  } else {
+    adminLogType=tab;
+    adminLogPage=1;
+    loadAdminLogs();
+  }
+}
+
+function renderAdminSummary(summary) {
+  const cards=[
+    ['使用者',summary.users],
+    ['群組數',summary.families],
+    ['使用中的食品',summary.activeFoods],
+    ['已用完食品',summary.consumedFoods],
+    ['有效工作階段',summary.activeSessions],
+    ['活動紀錄筆數',summary.activityLog],
+    ['系統請求筆數',summary.requestLog],
+    ['通知紀錄筆數',summary.notificationLog],
+    ['管理者數',summary.adminCount]
+  ];
+
+  const activityDays=Number(summary.retentionDays?.activity||90);
+  const notificationDays=Number(summary.retentionDays?.notification||90);
+  const requestDays=Number(summary.retentionDays?.request||30);
+
+  $('adminSummaryBody').innerHTML=`
+    <div class="admin-summary-grid">
+      ${cards.map(([label,value])=>`
+        <div class="admin-stat">
+          <div class="admin-stat-value">${escapeHtml(String(value??0))}</div>
+          <div class="admin-stat-label">${escapeHtml(translateUiString(label))}</div>
+        </div>
+      `).join('')}
+    </div>
+
+    <div class="admin-retention">
+      <span class="badge ok">ActivityLog ${activityDays} ${uiLanguage==='en'?'days':'天'}</span>
+      <span class="badge ok">NotificationLog ${notificationDays} ${uiLanguage==='en'?'days':'天'}</span>
+      <span class="badge ok">RequestLog ${requestDays} ${uiLanguage==='en'?'days':'天'}</span>
+    </div>
+
+    <div class="admin-note">
+      ${uiLanguage==='en'
+        ? `Server time: ${escapeHtml(adminFormatTime(summary.serverTime))}`
+        : `伺服器時間：${escapeHtml(adminFormatTime(summary.serverTime))}`
+      }
+    </div>
+  `;
+}
+
+async function loadAdminSummary() {
+  setStatus('adminStatus','');
+
+  $('adminSummaryBody').innerHTML=`
+    <div class="family-loading">
+      <div class="spinner"></div>
+      <h3>${escapeHtml(translateUiString('正在載入系統資料…'))}</h3>
+    </div>
+  `;
+
+  try {
+    const r=await api('adminSummary',{},30000);
+    renderAdminSummary(r.summary||{});
+  } catch(e) {
+    setStatus('adminStatus',e.message,'err');
+    $('adminSummaryBody').innerHTML='';
+    if(/沒有系統管理權限/.test(e.message)) {
+      me.isAdmin=false;
+      refreshAdminMenu();
+    }
+  }
+}
+
+function renderAdminActivityRows(items) {
+  if(!items.length) {
+    return `<div class="admin-empty">${escapeHtml(translateUiString('目前沒有紀錄'))}</div>`;
+  }
+
+  return `
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(translateUiString('時間'))}</th>
+            <th>${escapeHtml(translateUiString('群組'))}</th>
+            <th>${escapeHtml(translateUiString('使用者名稱'))}</th>
+            <th>${escapeHtml(translateUiString('動作'))}</th>
+            <th>${escapeHtml(translateUiString('對象'))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(item=>`
+            <tr>
+              <td class="muted-cell">${escapeHtml(adminFormatTime(item.time))}</td>
+              <td>${escapeHtml(item.familyName||item.familyId||'—')}</td>
+              <td>${escapeHtml(adminPersonText(item))}</td>
+              <td>${escapeHtml(adminActionLabel(item.action))}</td>
+              <td title="${escapeHtml(item.targetId||'')}">${escapeHtml(item.targetLabel||item.detail||'—')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminNotificationRows(items) {
+  if(!items.length) {
+    return `<div class="admin-empty">${escapeHtml(translateUiString('目前沒有紀錄'))}</div>`;
+  }
+
+  return `
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(translateUiString('時間'))}</th>
+            <th>${escapeHtml(translateUiString('群組'))}</th>
+            <th>${escapeHtml(translateUiString('使用者名稱'))}</th>
+            <th>${escapeHtml(translateUiString('食品'))}</th>
+            <th>${escapeHtml(translateUiString('到期'))}</th>
+            <th>${escapeHtml(translateUiString('提前天數'))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(item=>`
+            <tr>
+              <td class="muted-cell">${escapeHtml(adminFormatTime(item.time))}</td>
+              <td>${escapeHtml(item.familyName||item.familyId||'—')}</td>
+              <td>${escapeHtml(adminPersonText(item))}</td>
+              <td title="${escapeHtml(item.foodId||'')}">${escapeHtml(item.foodName||item.foodId||'—')}</td>
+              <td>${escapeHtml(item.expiry||'—')}</td>
+              <td>${escapeHtml(String(item.daysBefore??0))}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminRequestRows(items) {
+  if(!items.length) {
+    return `<div class="admin-empty">${escapeHtml(translateUiString('目前沒有紀錄'))}</div>`;
+  }
+
+  return `
+    <div class="admin-table-wrap">
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(translateUiString('更新時間'))}</th>
+            <th>${escapeHtml(translateUiString('使用者名稱'))}</th>
+            <th>${escapeHtml(translateUiString('動作'))}</th>
+            <th>${escapeHtml(translateUiString('狀態'))}</th>
+            <th>${escapeHtml(translateUiString('Request ID'))}</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${items.map(item=>`
+            <tr>
+              <td class="muted-cell">${escapeHtml(adminFormatTime(item.time))}</td>
+              <td>${escapeHtml(adminPersonText(item))}</td>
+              <td>${escapeHtml(item.action||'—')}</td>
+              <td>${escapeHtml(item.status||'—')}</td>
+              <td class="mono" title="${escapeHtml(item.requestId||'')}">${escapeHtml(item.requestIdShort||item.requestId||'—')}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderAdminLogs(result) {
+  adminLastLogResult=result;
+
+  $('adminLogCount').textContent=
+    uiLanguage==='en'
+      ? `${result.total||0} record${Number(result.total)===1?'':'s'}`
+      : `共 ${result.total||0} 筆`;
+
+  $('adminLogPageIndicator').textContent=
+    `${result.page||1} / ${result.totalPages||1}`;
+
+  $('adminLogPrevBtn').disabled=(result.page||1)<=1;
+  $('adminLogNextBtn').disabled=(result.page||1)>=(result.totalPages||1);
+
+  if(result.type==='activity') {
+    $('adminLogBody').innerHTML=renderAdminActivityRows(result.items||[]);
+  } else if(result.type==='notification') {
+    $('adminLogBody').innerHTML=renderAdminNotificationRows(result.items||[]);
+  } else {
+    $('adminLogBody').innerHTML=renderAdminRequestRows(result.items||[]);
+  }
+}
+
+async function loadAdminLogs() {
+  const requestSeq=++adminLogRequestSeq;
+  const requestType=adminLogType;
+  const requestPage=adminLogPage;
+  const requestPageSize=adminLogPageSize;
+  const requestQuery=adminLogQuery;
+
+  setStatus('adminStatus','');
+
+  $('adminLogBody').innerHTML=`
+    <div class="family-loading">
+      <div class="spinner"></div>
+      <h3>${escapeHtml(translateUiString('正在載入系統資料…'))}</h3>
+    </div>
+  `;
+
+  try {
+    const r=await api('adminLogs',{
+      type:requestType,
+      page:requestPage,
+      pageSize:requestPageSize,
+      query:requestQuery
+    },30000);
+
+    // 使用者若已切到別的 Log 分頁，忽略較舊的回應，避免畫面被前一個請求覆蓋。
+    if(requestSeq!==adminLogRequestSeq || adminCurrentTab!==requestType) return;
+
+    adminLogPage=r.page||1;
+    renderAdminLogs(r);
+  } catch(e) {
+    setStatus('adminStatus',e.message,'err');
+    $('adminLogBody').innerHTML='';
+    if(/沒有系統管理權限/.test(e.message)) {
+      me.isAdmin=false;
+      refreshAdminMenu();
+    }
+  }
+}
+
+function renderAdminUsers(admins) {
+  if(!admins.length) {
+    $('adminUsersBody').innerHTML=`
+      <div class="admin-empty">${escapeHtml(translateUiString('目前沒有紀錄'))}</div>
+    `;
+    return;
+  }
+
+  $('adminUsersBody').innerHTML=`
+    <div class="admin-users-list">
+      ${admins.map(a=>`
+        <div class="admin-user-row">
+          <div class="admin-user-main">
+            <div class="admin-user-name">
+              ${escapeHtml(a.displayName||a.email||a.userId)}
+              ${a.isSelf?` <span class="badge ok">${escapeHtml(translateUiString('自己'))}</span>`:''}
+            </div>
+            <div class="admin-user-email">${escapeHtml(a.email||a.userId)}</div>
+          </div>
+          <button
+            class="ghost"
+            type="button"
+            data-remove-admin="${escapeHtml(a.userId)}"
+            data-admin-self="${a.isSelf?'1':'0'}"
+          >${escapeHtml(translateUiString('移除管理者'))}</button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  $('adminUsersBody').querySelectorAll('[data-remove-admin]').forEach(btn=>{
+    btn.onclick=async()=>{
+      const userId=btn.getAttribute('data-remove-admin')||'';
+      const isSelf=btn.getAttribute('data-admin-self')==='1';
+
+      const message=isSelf
+        ? (uiLanguage==='en'
+            ? 'Remove your own administrator access? You will immediately lose access to this panel.'
+            : '確定要移除自己的管理者權限嗎？移除後會立刻失去此管理介面的存取權。')
+        : (uiLanguage==='en'
+            ? 'Remove this administrator?'
+            : '確定要移除這位管理者嗎？');
+
+      if(!confirm(message)) return;
+
+      try {
+        setBusy(btn,true,'移除中…','移除管理者');
+        const r=await api('adminRemoveAdmin',{userId},30000);
+
+        if(r.selfRemoved) {
+          me.isAdmin=false;
+          refreshAdminMenu();
+          $('adminDialog').close();
+          return;
+        }
+
+        await loadAdminUsers();
+      } catch(e) {
+        setStatus('adminStatus',e.message,'err');
+      } finally {
+        setBusy(btn,false,'移除中…','移除管理者');
+      }
+    };
+  });
+}
+
+async function loadAdminUsers() {
+  setStatus('adminStatus','');
+
+  $('adminUsersBody').innerHTML=`
+    <div class="family-loading">
+      <div class="spinner"></div>
+      <h3>${escapeHtml(translateUiString('正在載入系統資料…'))}</h3>
+    </div>
+  `;
+
+  try {
+    const r=await api('adminListAdmins',{},30000);
+    renderAdminUsers(r.admins||[]);
+  } catch(e) {
+    setStatus('adminStatus',e.message,'err');
+    $('adminUsersBody').innerHTML='';
+    if(/沒有系統管理權限/.test(e.message)) {
+      me.isAdmin=false;
+      refreshAdminMenu();
+    }
+  }
+}
+
+$('adminBtn').onclick=()=>{
+  if(!me || !me.isAdmin) return;
+  adminCurrentTab='overview';
+  if(!$('adminDialog').open) $('adminDialog').showModal();
+  setAdminTab('overview');
+};
+
+$('adminCloseBtn').onclick=()=>$('adminDialog').close();
+
+$('adminTabOverview').onclick=()=>setAdminTab('overview');
+$('adminTabActivity').onclick=()=>setAdminTab('activity');
+$('adminTabNotification').onclick=()=>setAdminTab('notification');
+$('adminTabRequest').onclick=()=>setAdminTab('request');
+$('adminTabAdmins').onclick=()=>setAdminTab('admins');
+
+$('adminLogSearchBtn').onclick=()=>{
+  adminLogQuery=$('adminLogSearch').value.trim();
+  adminLogPage=1;
+  loadAdminLogs();
+};
+
+$('adminLogSearch').addEventListener('keydown',e=>{
+  if(e.key!=='Enter') return;
+  adminLogQuery=$('adminLogSearch').value.trim();
+  adminLogPage=1;
+  loadAdminLogs();
+});
+
+$('adminLogRefreshBtn').onclick=()=>loadAdminLogs();
+
+$('adminLogPageSize').onchange=()=>{
+  adminLogPageSize=Number($('adminLogPageSize').value)||20;
+  adminLogPage=1;
+  loadAdminLogs();
+};
+
+$('adminLogPrevBtn').onclick=()=>{
+  if(adminLogPage<=1) return;
+  adminLogPage--;
+  loadAdminLogs();
+};
+
+$('adminLogNextBtn').onclick=()=>{
+  const totalPages=Number(adminLastLogResult?.totalPages||1);
+  if(adminLogPage>=totalPages) return;
+  adminLogPage++;
+  loadAdminLogs();
+};
+
+$('adminAddBtn').onclick=async()=>{
+  const btn=$('adminAddBtn');
+  const email=$('adminAddEmail').value.trim();
+  if(!email) {
+    setStatus(
+      'adminStatus',
+      uiLanguage==='en'?'Please enter an email.':'請輸入 Email。',
+      'err'
+    );
+    return;
+  }
+
+  try {
+    setBusy(btn,true,'新增中…','新增管理者');
+    await api('adminAddAdmin',{email},30000);
+    $('adminAddEmail').value='';
+    await loadAdminUsers();
+  } catch(e) {
+    setStatus('adminStatus',e.message,'err');
+  } finally {
+    setBusy(btn,false,'新增中…','新增管理者');
+  }
+};
+
 // -------- 家庭管理 --------
 
 $('familyManageBtn').onclick=async()=>{
@@ -6008,7 +6813,6 @@ $('familyManageBtn').onclick=async()=>{
 $('familyCloseBtn').onclick=()=>$('familyDialog').close();
 
 // 點擊 dialog 外圍的半透明背景即可關閉。
-// 只套用「新增 / 加入群組」與「群組設定」兩個 Pop-up。
 function enableBackdropClose(dialog) {
   dialog.addEventListener('click', e => {
     // 只有事件本身真的落在 dialog 背景上才判斷是否關閉。
@@ -6030,6 +6834,7 @@ function enableBackdropClose(dialog) {
 enableBackdropClose($('groupDialog'));
 enableBackdropClose($('familyDialog'));
 enableBackdropClose($('foodPhotoDialog'));
+enableBackdropClose($('adminDialog'));
 
 function renderFamilyManagement() {
   const f=currentFamilyDetails;
