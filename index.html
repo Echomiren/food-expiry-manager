@@ -65,12 +65,12 @@ button:disabled{opacity:.5;cursor:not-allowed}
 .empty{text-align:center;color:#98a2b3;padding:35px}
 .calendar-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
 .calendar-head button{width:auto}
-.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cal{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}
 .dow{text-align:center;font-size:12px;color:#667085;padding:6px}
-.day{min-height:92px;border:1px solid #e6e9ee;border-radius:10px;padding:7px}
+.day{min-width:0;min-height:92px;border:1px solid #e6e9ee;border-radius:10px;padding:7px}
 .day.muted{background:#fafafa;color:#bbb}
 .num{font-size:12px;color:#667085}
-.event{font-size:11px;background:#e9f6fa;color:#205c6d;border-radius:6px;padding:4px 6px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.event{min-width:0;width:100%;font-size:11px;background:#e9f6fa;color:#205c6d;border-radius:6px;padding:4px 6px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .hidden{display:none!important}
 .splash{max-width:520px;margin:70px auto;text-align:center}
 .spinner{width:32px;height:32px;border:4px solid #e5e7eb;border-top-color:#1686a7;border-radius:50%;margin:18px auto;animation:spin .8s linear infinite}
@@ -537,6 +537,9 @@ body.ocr-dialog-lock{
   .day{min-height:82px;padding:5px}
   .cal.week-mode .day{min-height:125px}
   .event{font-size:10px;padding:3px 4px}
+  /* 手機月曆以概況為主：每格只顯示 1 筆，圖片留到週模式 / 下方明細看。 */
+  .cal:not(.week-mode) .calendar-event-thumb{display:none}
+  .cal:not(.week-mode) .calendar-event-row{gap:0}
   .today-label{display:none}
 }
 
@@ -936,6 +939,13 @@ html[data-theme="dark"] .food-thumb{
   align-items:center;
   gap:4px;
   min-width:0;
+  width:100%;
+}
+.calendar-event-row>span:last-child{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .calendar-event-thumb{
   width:20px;
@@ -1427,7 +1437,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-pagination-consumed-history-20260930">
+<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-20260930">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -5285,7 +5295,7 @@ function renderCalendarDayDetail() {
 
               <div class="calendar-detail-text">
                 <div class="calendar-detail-item-name">
-                  ${escapeHtml(f.name)}${isConsumedFood(f)?' · 已用完':` ×${f.qty}`}
+                  ${escapeHtml(f.name)}${isConsumedFood(f)?` · ${escapeHtml(translateUiString('已用完'))}`:` ×${f.qty}`}
                 </div>
               </div>
             </div>
@@ -5395,7 +5405,13 @@ function renderCalendar() {
     if(ds===todayIso) classes.push('today');
     if(ds===selectedCalendarDate) classes.push('selected');
 
-    const shown=ev.slice(0,2);
+    // 月曆在手機窄版只顯示 1 筆摘要；桌機與週模式最多顯示 2 筆。
+    // 其餘項目以 +N 顯示，完整內容仍可點日期在下方查看。
+    const compactMonth =
+      calendarMode==='month' &&
+      window.matchMedia('(max-width:600px)').matches;
+    const shownLimit=compactMonth ? 1 : 2;
+    const shown=ev.slice(0,shownLimit);
     const more=Math.max(0,ev.length-shown.length);
 
     h+=`
@@ -5438,7 +5454,7 @@ function renderCalendar() {
                     </span>`
                  : ''
                }
-               <span>${escapeHtml(f.name)}${isConsumedFood(f)?' · 已用完':` ×${f.qty}`}</span>
+               <span>${escapeHtml(f.name)}${isConsumedFood(f)?` · ${escapeHtml(translateUiString('已用完'))}`:` ×${f.qty}`}</span>
              </div>
            </div>`
         ).join('')}
@@ -5581,6 +5597,16 @@ function setCalendarMode(mode) {
 
 $('calendarMonthMode').onclick=()=>setCalendarMode('month');
 $('calendarWeekMode').onclick=()=>setCalendarMode('week');
+
+const calendarCompactMedia=window.matchMedia('(max-width:600px)');
+const refreshCalendarForViewport=()=>{
+  if(!$('calendarView').classList.contains('hidden')) renderCalendar();
+};
+if(calendarCompactMedia.addEventListener) {
+  calendarCompactMedia.addEventListener('change',refreshCalendarForViewport);
+} else if(calendarCompactMedia.addListener) {
+  calendarCompactMedia.addListener(refreshCalendarForViewport);
+}
 
 $('listTab').onclick=()=>{
   show('listSection');
