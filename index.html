@@ -2377,6 +2377,9 @@ const I18N_EN = {
   "通知紀錄": "Notification log",
   "系統請求": "System requests",
   "管理者": "Administrators",
+  "主要管理者": "Primary administrator",
+  "不可移除": "Cannot remove",
+  "尚未設定主要管理者，請先重新執行一次 Apps Script 的 setupCurrentGoogleAccountAsAdmin()。": "Primary administrator is not configured. Run setupCurrentGoogleAccountAsAdmin() once again in Apps Script.",
   "正在載入系統資料…": "Loading system data…",
   "搜尋使用者、群組、食品、動作…": "Search users, groups, foods, actions…",
   "搜尋": "Search",
@@ -6570,7 +6573,7 @@ async function loadAdminLogs() {
   }
 }
 
-function renderAdminUsers(admins) {
+function renderAdminUsers(admins,primaryConfigured=true) {
   if(!admins.length) {
     $('adminUsersBody').innerHTML=`
       <div class="admin-empty">${escapeHtml(translateUiString('目前沒有紀錄'))}</div>
@@ -6578,23 +6581,32 @@ function renderAdminUsers(admins) {
     return;
   }
 
+  const primaryWarning=!primaryConfigured
+    ? `<div class="status err" style="margin-bottom:12px">${escapeHtml(translateUiString('尚未設定主要管理者，請先重新執行一次 Apps Script 的 setupCurrentGoogleAccountAsAdmin()。'))}</div>`
+    : '';
+
   $('adminUsersBody').innerHTML=`
+    ${primaryWarning}
     <div class="admin-users-list">
       ${admins.map(a=>`
         <div class="admin-user-row">
           <div class="admin-user-main">
             <div class="admin-user-name">
               ${escapeHtml(a.displayName||a.email||a.userId)}
+              ${a.isPrimary?` <span class="badge warn">${escapeHtml(translateUiString('主要管理者'))}</span>`:''}
               ${a.isSelf?` <span class="badge ok">${escapeHtml(translateUiString('自己'))}</span>`:''}
             </div>
             <div class="admin-user-email">${escapeHtml(a.email||a.userId)}</div>
           </div>
-          <button
-            class="ghost"
-            type="button"
-            data-remove-admin="${escapeHtml(a.userId)}"
-            data-admin-self="${a.isSelf?'1':'0'}"
-          >${escapeHtml(translateUiString('移除管理者'))}</button>
+          ${a.isPrimary
+            ? `<button class="ghost" type="button" disabled>${escapeHtml(translateUiString('不可移除'))}</button>`
+            : `<button
+                class="ghost"
+                type="button"
+                data-remove-admin="${escapeHtml(a.userId)}"
+                data-admin-self="${a.isSelf?'1':'0'}"
+              >${escapeHtml(translateUiString('移除管理者'))}</button>`
+          }
         </div>
       `).join('')}
     </div>
@@ -6648,7 +6660,7 @@ async function loadAdminUsers() {
 
   try {
     const r=await api('adminListAdmins',{},30000);
-    renderAdminUsers(r.admins||[]);
+    renderAdminUsers(r.admins||[],r.primaryConfigured!==false);
   } catch(e) {
     setStatus('adminStatus',e.message,'err');
     $('adminUsersBody').innerHTML='';
