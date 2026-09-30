@@ -1400,7 +1400,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-sync-idempotency-20260929">
+<div class="app" data-build="v4.4-pagination-consumed-20260930">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -1590,7 +1590,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
         <h2>新增食品</h2>
 
         <label for="name">食品名稱</label>
-        <input id="name" placeholder="例如：鮮奶">
+        <input id="name" autocomplete="off" placeholder="例如：鮮奶">
 
         <div class="row">
           <div>
@@ -1630,7 +1630,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
         </div>
 
         <label for="note">備註</label>
-        <textarea id="note" rows="2"></textarea>
+        <textarea id="note" rows="2" autocomplete="off"></textarea>
 
         <label for="newNotifyMode">Email 提醒</label>
         <select id="newNotifyMode">
@@ -1656,7 +1656,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 
       <div id="listSection">
         <div class="list-tools">
-          <input id="foodSearch" type="search" placeholder="搜尋食品名稱…">
+          <input id="foodSearch" type="search" autocomplete="off" placeholder="搜尋食品名稱…">
           <button id="foodFilterToggle" class="ghost" type="button">篩選</button>
         </div>
 
@@ -1828,7 +1828,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
     <input id="editId" type="hidden">
 
     <label for="editName">食品名稱</label>
-    <input id="editName">
+    <input id="editName" autocomplete="off">
 
     <div class="row">
       <div>
@@ -1865,7 +1865,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
     </div>
 
     <label for="editNote">備註</label>
-    <textarea id="editNote" rows="3"></textarea>
+    <textarea id="editNote" rows="3" autocomplete="off"></textarea>
 
     <label for="editNotifyMode">Email 提醒</label>
     <select id="editNotifyMode">
@@ -2111,6 +2111,8 @@ const I18N_EN = {
   "📷 更換物品照片": "📷 Replace item photo",
   "取消": "Cancel",
   "儲存修改": "Save changes",
+  "用掉 1": "Use 1",
+  "用完": "Finish",
   "提醒設定": "Reminder settings",
   "正在載入提醒設定…": "Loading reminder settings…",
   "正在讀取你的個人與群組提醒偏好。": "Loading your personal and group reminder preferences.",
@@ -4436,6 +4438,8 @@ $('addBtn').onclick=()=>{
       notifyMode:$('newNotifyMode').value || 'inherit',
       notifyDaysBefore:$('newNotifyMode').value==='custom' ? Math.max(0,Number($('newNotifyDays').value||0)) : '',
       imageId:newProductImageId,
+      status:'active',
+      consumedAt:'',
       updatedAt:'',
       _pending:true
     };
@@ -4475,46 +4479,42 @@ window.consume=id=>{
 
   const f=foods.find(x=>x.id===id);
   if(!f) return;
+  if((f.status||'active')==='consumed') return;
 
-  f.qty=Number(f.qty)-1;
+  const oldUpdatedAt=f.updatedAt||'';
+  const nextQty=Math.max(0,Number(f.qty||0)-1);
 
-  if(f.qty<=0) {
-    foods=foods.filter(x=>x.id!==id);
+  f.qty=nextQty;
+  f._pending=true;
 
-    if(id.startsWith('tmp-')) {
-      if(f?.imageId) {
-        discardPendingImage(
-          f.imageId,
-          currentFamilyId
-        );
-      }
+  if(nextQty<=0) {
+    // 最後一個用完：保留這筆資料，但改成 consumed 歸檔。
+    // consumedAt 保留第一次按下「用完」的時間，重試時不重新產生。
+    f.status='consumed';
+    f.consumedAt=f.consumedAt || new Date().toISOString();
+  } else {
+    f.status='active';
+    f.consumedAt='';
+  }
 
-      pendingChanges=pendingChanges.filter(x=>x.tempId!==id);
-      if(pendingChanges.length) scheduleSync();
-      else setSyncState('synced','已同步');
-    } else {
-      queueChange({
-        clientKey:requestUid(),type:'delete',id,
-        expectedUpdatedAt:f.updatedAt||''
-      });
-    }
-  } else if(id.startsWith('tmp-')) {
+  if(id.startsWith('tmp-')) {
+    // 尚未取得正式 id 的食品，直接更新原本 add payload。
+    // 後端仍只會建立一筆，並依 status 決定是否列在目前食品中。
     const add=pendingChanges.find(x=>x.type==='add'&&x.tempId===id);
-    if(add) add.food.qty=f.qty;
+    if(add) add.food=clientFoodPayload(f);
     scheduleSync();
   } else {
     queueChange({
       clientKey:requestUid(),
       type:'update',
       id,
-      expectedUpdatedAt:f.updatedAt||'',
+      expectedUpdatedAt:oldUpdatedAt,
       food:clientFoodPayload(f)
     });
   }
 
   render();
 };
-
 window.removeFood=id=>{
   if(!canEditCurrentGroup()) {
     alert('Viewer 只能查看資料，不能刪除食品。');
@@ -4686,7 +4686,9 @@ function clientFoodPayload(f) {
     note:f.note||'',
     notifyMode:f.notifyMode||'inherit',
     notifyDaysBefore:(f.notifyMode||'inherit')==='custom' ? Math.max(0,Number(f.notifyDaysBefore||0)) : '',
-    imageId:f.imageId||''
+    imageId:f.imageId||'',
+    status:(f.status||'active')==='consumed' ? 'consumed' : 'active',
+    consumedAt:(f.status||'active')==='consumed' ? String(f.consumedAt||'') : ''
   };
 }
 
@@ -4709,13 +4711,21 @@ function badgeInfo(d) {
   return ['ok',`剩 ${d} 天`];
 }
 
+function isActiveFood(f) {
+  return (f?.status||'active')!=='consumed';
+}
+
+function activeFoods() {
+  return foods.filter(isActiveFood);
+}
+
 function refreshLocationFilterOptions() {
   const select=$('foodLocationFilter');
   if(!select) return;
 
   const previous=select.value||'all';
   const locations=[...new Set(
-    foods
+    activeFoods()
       .map(f=>String(f.location||'').trim())
       .filter(Boolean)
   )].sort((a,b)=>a.localeCompare(b,'zh-Hant'));
@@ -4741,7 +4751,7 @@ function getFilteredFoods() {
   const expiryFilter=$('foodExpiryFilter')?.value||'all';
   const locationFilter=$('foodLocationFilter')?.value||'all';
 
-  return [...foods]
+  return activeFoods()
     .filter(f=>{
       if(query) {
         const name=String(f.name||'')
@@ -4810,7 +4820,7 @@ function renderList() {
   updateFilterUi();
 
   const sorted=getFilteredFoods();
-  const total=foods.length;
+  const total=activeFoods().length;
   const filteredTotal=sorted.length;
   const totalPages=Math.max(1,Math.ceil(filteredTotal/foodPageSize));
 
@@ -4872,7 +4882,8 @@ function renderList() {
 
             <div class="actions">
               ${canEditCurrentGroup()
-                ? `<button class="ghost" onclick="openEdit('${f.id}')">編輯</button>
+                ? `<button class="ghost" onclick="consume('${f.id}')">${Number(f.qty)>1?'用掉 1':'用完'}</button>
+                   <button class="ghost" onclick="openEdit('${f.id}')">編輯</button>
                    <button class="danger" onclick="removeFood('${f.id}')">刪除</button>`
                 : `<span class="small">唯讀</span>`
               }
@@ -4978,7 +4989,7 @@ function renderCalendarDayDetail() {
   const todayIso=localDateIso(new Date());
 
   const dayNames=['日','一','二','三','四','五','六'];
-  const items=foods
+  const items=activeFoods()
     .filter(f=>f.expiry===selectedCalendarDate)
     .sort((a,b)=>
       String(a.name||'').localeCompare(String(b.name||''),'zh-Hant')
@@ -5035,7 +5046,8 @@ function renderCalendarDayDetail() {
 
             <div class="actions">
               ${canEditCurrentGroup()
-                ? `<button class="ghost" onclick="openEdit('${f.id}')">編輯</button>`
+                ? `<button class="ghost" onclick="consume('${f.id}')">${Number(f.qty)>1?'用掉 1':'用完'}</button>
+                   <button class="ghost" onclick="openEdit('${f.id}')">編輯</button>`
                 : `<span class="small">唯讀</span>`
               }
             </div>
@@ -5098,7 +5110,7 @@ function renderCalendar() {
 
   const byDate=new Map();
 
-  for(const f of foods) {
+  for(const f of activeFoods()) {
     if(!byDate.has(f.expiry)) byDate.set(f.expiry,[]);
     byDate.get(f.expiry).push(f);
   }
