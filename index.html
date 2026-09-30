@@ -462,6 +462,18 @@ body.ocr-dialog-lock{
   background:#e9f6fa;
   color:#205c6d;
 }
+.event.consumed{
+  background:#eef1f5;
+  color:#667085;
+  text-decoration:none;
+}
+.badge.consumed{
+  background:#eef1f5;
+  color:#596579;
+}
+.food.consumed-food{
+  background:#f8fafc;
+}
 .more-events{
   font-size:10px;
   font-weight:800;
@@ -726,6 +738,17 @@ html[data-theme="dark"] .event.soon{
 html[data-theme="dark"] .event.expired{
   background:#402124;
   color:#f2a4aa;
+}
+html[data-theme="dark"] .event.consumed{
+  background:#273546;
+  color:#aebbd0;
+}
+html[data-theme="dark"] .badge.consumed{
+  background:#273546;
+  color:#b7c4d8;
+}
+html[data-theme="dark"] .food.consumed-food{
+  background:#0f203d;
 }
 html[data-theme="dark"] .badge.ok{
   background:#18392a;
@@ -1259,6 +1282,8 @@ button.linkbtn {background:transparent;color:var(--brand-primary-light);box-shad
 .event.normal {background:#EAF3FD;color:#285887}
 .event.soon {background:#FFF5DF;color:#895d12}
 .event.expired {background:#FDECEF;color:#b23d48}
+.event.consumed {background:#EEF2F7;color:#5D6B80}
+.badge.consumed {background:#EEF2F7;color:#536174}
 
 .food-thumb:focus,.calendar-event-thumb:focus,.calendar-detail-thumb:focus {outline-color:var(--brand-secondary)}
 .ocr-progress > div,.ocr-offline-progress>div {background:var(--brand-gradient)}
@@ -1342,6 +1367,8 @@ html[data-theme="dark"] .day.selected {background:#15375D;border-color:#4C9BEF}
 html[data-theme="dark"] .event.normal {background:#183E68;color:#C8E2FF}
 html[data-theme="dark"] .event.soon {background:#49381B;color:#F6D486}
 html[data-theme="dark"] .event.expired {background:#4B252D;color:#F5AAB2}
+html[data-theme="dark"] .event.consumed {background:#233A58;color:#B8C7DA}
+html[data-theme="dark"] .badge.consumed {background:#233A58;color:#C3D0E0}
 html[data-theme="dark"] .badge.ok {background:#163F38;color:#9DE1C7}
 html[data-theme="dark"] .badge.warn {background:#49381B;color:#F6D486}
 html[data-theme="dark"] .badge.danger {background:#4B252D;color:#F5AAB2}
@@ -1400,7 +1427,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-pagination-consumed-20260930">
+<div class="app" data-build="v4.4-pagination-consumed-history-20260930">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -1652,6 +1679,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
       <div class="tabs">
         <button id="listTab" class="active" type="button">食品清單</button>
         <button id="calendarTab" class="inactive" type="button">到期日曆</button>
+        <button id="consumedTab" class="inactive" type="button">已用完</button>
       </div>
 
       <div id="listSection">
@@ -1695,6 +1723,32 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
             <button id="foodPrevPage" class="ghost" type="button">← 上一頁</button>
             <span id="foodPageIndicator" class="list-page-indicator">1 / 1</span>
             <button id="foodNextPage" class="ghost" type="button">下一頁 →</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="consumedSection" class="hidden">
+        <div class="list-tools">
+          <input id="consumedSearch" type="search" autocomplete="off" placeholder="搜尋已用完食品…">
+        </div>
+
+        <div id="consumedListCount" class="list-result-count"></div>
+        <div id="consumedListView"></div>
+
+        <div id="consumedPagination" class="list-pagination hidden">
+          <div class="list-page-size">
+            <label for="consumedPageSize" style="margin:0">每頁</label>
+            <select id="consumedPageSize" aria-label="已用完每頁顯示筆數">
+              <option value="10">10</option>
+              <option value="20">20</option>
+              <option value="50">50</option>
+            </select>
+            <span>筆</span>
+          </div>
+          <div id="consumedPageNav" class="list-page-nav">
+            <button id="consumedPrevPage" class="ghost" type="button">← 上一頁</button>
+            <span id="consumedPageIndicator" class="list-page-indicator">1 / 1</span>
+            <button id="consumedNextPage" class="ghost" type="button">下一頁 →</button>
           </div>
         </div>
       </div>
@@ -1968,6 +2022,7 @@ const FOOD_PAGE_SIZE_KEY = 'food-expiry-list-page-size-v1';
 const savedFoodPageSize = Number(localStorage.getItem(FOOD_PAGE_SIZE_KEY));
 let foodPageSize = [10,20,50].includes(savedFoodPageSize) ? savedFoodPageSize : 10;
 let foodCurrentPage = 1;
+let consumedCurrentPage = 1;
 
 let pendingChanges = [];
 let syncTimer = null;
@@ -2057,7 +2112,14 @@ const I18N_EN = {
   "提前幾天提醒": "Days before expiry",
   "食品清單": "Food list",
   "到期日曆": "Expiry calendar",
+  "已用完": "Consumed",
   "搜尋食品名稱…": "Search food name…",
+  "搜尋已用完食品…": "Search consumed food…",
+  "恢復": "Restore",
+  "目前沒有已用完食品": "No consumed food items yet",
+  "沒有符合搜尋條件的已用完食品": "No consumed food items match the search",
+  "恢復數量（至少 1）：": "Restore quantity (at least 1):",
+  "數量必須至少為 1。": "Quantity must be at least 1.",
   "篩選": "Filter",
   "每頁": "Per page",
   "每頁顯示筆數": "Items per page",
@@ -2327,6 +2389,8 @@ function translateUiString(value) {
   if((m=core.match(/^到期：(.*)$/))) return `${leading}Expiry: ${m[1]}${trailing}`;
   if((m=core.match(/^位置：(.*)$/))) return `${leading}Location: ${translateUiString(m[1])}${trailing}`;
   if((m=core.match(/^備註：(.*)$/))) return `${leading}Notes: ${m[1]}${trailing}`;
+  if((m=core.match(/^用完：(.*)$/))) return `${leading}Consumed: ${m[1]}${trailing}`;
+  if((m=core.match(/^原到期：(.*)$/))) return `${leading}Original expiry: ${m[1]}${trailing}`;
   if((m=core.match(/^已壓縮至約 (\d+) KB$/))) return `${leading}Compressed to about ${m[1]} KB${trailing}`;
   if((m=core.match(/^有 (\d+) 筆衝突，已保留未同步狀態$/))) return `${leading}${m[1]} conflict${m[1]==='1'?'':'s'} found; unsynced state retained${trailing}`;
   if((m=core.match(/^目前：(.*)$/))) {
@@ -3100,6 +3164,7 @@ $('familySelect').onchange=async()=>{
 
   currentFamilyId=$('familySelect').value;
   foodCurrentPage=1;
+  consumedCurrentPage=1;
   loadFamily();
 };
 
@@ -4515,6 +4580,47 @@ window.consume=id=>{
 
   render();
 };
+window.restoreFood=id=>{
+  if(!canEditCurrentGroup()) {
+    alert('Viewer 只能查看資料，不能修改食品。');
+    return;
+  }
+
+  const f=foods.find(x=>x.id===id);
+  if(!f || !isConsumedFood(f)) return;
+
+  const value=prompt('恢復數量（至少 1）：','1');
+  if(value===null) return;
+
+  const qty=Math.floor(Number(value));
+  if(!Number.isFinite(qty) || qty<1) {
+    alert('數量必須至少為 1。');
+    return;
+  }
+
+  const oldUpdatedAt=f.updatedAt||'';
+  f.qty=qty;
+  f.status='active';
+  f.consumedAt='';
+  f._pending=true;
+
+  if(id.startsWith('tmp-')) {
+    const add=pendingChanges.find(x=>x.type==='add'&&x.tempId===id);
+    if(add) add.food=clientFoodPayload(f);
+    scheduleSync();
+  } else {
+    queueChange({
+      clientKey:requestUid(),
+      type:'update',
+      id,
+      expectedUpdatedAt:oldUpdatedAt,
+      food:clientFoodPayload(f)
+    });
+  }
+
+  render();
+};
+
 window.removeFood=id=>{
   if(!canEditCurrentGroup()) {
     alert('Viewer 只能查看資料，不能刪除食品。');
@@ -4717,6 +4823,43 @@ function isActiveFood(f) {
 
 function activeFoods() {
   return foods.filter(isActiveFood);
+}
+
+function isConsumedFood(f) {
+  return (f?.status||'active')==='consumed';
+}
+
+function consumedFoods() {
+  return foods.filter(isConsumedFood);
+}
+
+function formatConsumedAt(value) {
+  if(!value) return '';
+  const d=new Date(value);
+  if(Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString(uiLanguage==='en'?'en-US':'zh-TW',{
+    year:'numeric',month:'2-digit',day:'2-digit',
+    hour:'2-digit',minute:'2-digit'
+  });
+}
+
+function getFilteredConsumedFoods() {
+  const query=String($('consumedSearch')?.value||'')
+    .trim()
+    .toLocaleLowerCase('zh-Hant');
+
+  return consumedFoods()
+    .filter(f=>{
+      if(!query) return true;
+      const haystack=[f.name,f.location,f.note]
+        .map(x=>String(x||'').toLocaleLowerCase('zh-Hant'))
+        .join(' ');
+      return haystack.includes(query);
+    })
+    .sort((a,b)=>
+      String(b.consumedAt||'').localeCompare(String(a.consumedAt||'')) ||
+      String(a.name||'').localeCompare(String(b.name||''),'zh-Hant')
+    );
 }
 
 function refreshLocationFilterOptions() {
@@ -4926,6 +5069,107 @@ function renderList() {
   prefetchFoodImages(pageFoods,4);
 }
 
+function renderConsumedList() {
+  const box=$('consumedListView');
+  if(!box) return;
+
+  const sorted=getFilteredConsumedFoods();
+  const total=consumedFoods().length;
+  const filteredTotal=sorted.length;
+  const totalPages=Math.max(1,Math.ceil(filteredTotal/foodPageSize));
+
+  consumedCurrentPage=Math.min(Math.max(1,consumedCurrentPage),totalPages);
+
+  const startIndex=(consumedCurrentPage-1)*foodPageSize;
+  const endIndex=Math.min(startIndex+foodPageSize,filteredTotal);
+  const pageFoods=sorted.slice(startIndex,endIndex);
+
+  if(!total) {
+    $('consumedListCount').textContent='共 0 項';
+    box.innerHTML='<div class="empty">目前沒有已用完食品</div>';
+    show('consumedPagination',false);
+    return;
+  }
+
+  if(!filteredTotal) {
+    $('consumedListCount').textContent=`顯示 0 / ${total} 項`;
+    box.innerHTML='<div class="empty">沒有符合搜尋條件的已用完食品</div>';
+    show('consumedPagination',false);
+    return;
+  }
+
+  $('consumedListCount').textContent=
+    filteredTotal===total
+      ? `共 ${total} 項 · 顯示 ${startIndex+1}–${endIndex} 項`
+      : `符合 ${filteredTotal} / ${total} 項 · 顯示 ${startIndex+1}–${endIndex} 項`;
+
+  box.innerHTML=pageFoods.map(f=>`
+    <div class="food compact-food consumed-food ${f._pending?'pending':''}">
+      <div class="food-card-layout">
+        ${f.imageId
+          ? `<div
+               class="food-thumb"
+               role="button"
+               tabindex="0"
+               title="查看照片"
+               onclick="openFoodPhoto('${f.id}')"
+               onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openFoodPhoto('${f.id}')}"
+             >
+               <img
+                 class="food-thumb-img"
+                 data-food-image="${escapeHtml(f.imageId)}"
+                 alt="${escapeHtml(f.name)}"
+               >
+             </div>`
+          : ''
+        }
+
+        <div class="food-main" style="flex:1">
+          <div class="food-head">
+            <div class="food-title">${escapeHtml(f.name)}</div>
+            <div class="actions">
+              ${canEditCurrentGroup()
+                ? `<button class="ghost" onclick="restoreFood('${f.id}')">恢復</button>
+                   <button class="danger" onclick="removeFood('${f.id}')">刪除</button>`
+                : `<span class="small">唯讀</span>`
+              }
+            </div>
+          </div>
+
+          <div class="food-summary">
+            <span>原到期：${escapeHtml(f.expiry)}</span>
+            <span>位置：${escapeHtml(f.location)}</span>
+            ${f.consumedAt?`<span>用完：${escapeHtml(formatConsumedAt(f.consumedAt))}</span>`:''}
+          </div>
+
+          ${f.note
+            ? `<div class="food-note">備註：${escapeHtml(f.note)}</div>`
+            : ''
+          }
+
+          <div class="food-badges">
+            <span class="badge consumed">已用完</span>
+            ${f._pending
+              ? '<span class="badge warn">待同步</span>'
+              : ''
+            }
+          </div>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  show('consumedPagination',true);
+  show('consumedPageNav',totalPages>1);
+  $('consumedPageSize').value=String(foodPageSize);
+  $('consumedPageIndicator').textContent=`${consumedCurrentPage} / ${totalPages}`;
+  $('consumedPrevPage').disabled=consumedCurrentPage<=1;
+  $('consumedNextPage').disabled=consumedCurrentPage>=totalPages;
+
+  observeFoodImages(box);
+  prefetchFoodImages(pageFoods,4);
+}
+
 function localDateIso(date) {
   return (
     date.getFullYear()+'-'+
@@ -4951,6 +5195,8 @@ function startOfWeek(date) {
 }
 
 function calendarEventClass(f) {
+  if(isConsumedFood(f)) return 'consumed';
+
   const d=daysLeft(f.expiry);
 
   if(d<0) return 'expired';
@@ -4989,7 +5235,7 @@ function renderCalendarDayDetail() {
   const todayIso=localDateIso(new Date());
 
   const dayNames=['日','一','二','三','四','五','六'];
-  const items=activeFoods()
+  const items=foods
     .filter(f=>f.expiry===selectedCalendarDate)
     .sort((a,b)=>
       String(a.name||'').localeCompare(String(b.name||''),'zh-Hant')
@@ -5039,15 +5285,18 @@ function renderCalendarDayDetail() {
 
               <div class="calendar-detail-text">
                 <div class="calendar-detail-item-name">
-                  ${escapeHtml(f.name)} ×${f.qty}
+                  ${escapeHtml(f.name)}${isConsumedFood(f)?' · 已用完':` ×${f.qty}`}
                 </div>
               </div>
             </div>
 
             <div class="actions">
               ${canEditCurrentGroup()
-                ? `<button class="ghost" onclick="consume('${f.id}')">${Number(f.qty)>1?'用掉 1':'用完'}</button>
-                   <button class="ghost" onclick="openEdit('${f.id}')">編輯</button>`
+                ? (isConsumedFood(f)
+                    ? `<button class="ghost" onclick="restoreFood('${f.id}')">恢復</button>`
+                    : `<button class="ghost" onclick="consume('${f.id}')">${Number(f.qty)>1?'用掉 1':'用完'}</button>
+                       <button class="ghost" onclick="openEdit('${f.id}')">編輯</button>`
+                  )
                 : `<span class="small">唯讀</span>`
               }
             </div>
@@ -5055,7 +5304,11 @@ function renderCalendarDayDetail() {
 
           <div class="food-summary">
             <span>位置：${escapeHtml(f.location)}</span>
-            <span class="badge ${c}" style="margin-top:0">${t}</span>
+            ${isConsumedFood(f)
+              ? `<span class="badge consumed" style="margin-top:0">已用完</span>
+                 ${f.consumedAt?`<span>用完：${escapeHtml(formatConsumedAt(f.consumedAt))}</span>`:''}`
+              : `<span class="badge ${c}" style="margin-top:0">${t}</span>`
+            }
           </div>
 
           ${f.note
@@ -5110,7 +5363,7 @@ function renderCalendar() {
 
   const byDate=new Map();
 
-  for(const f of activeFoods()) {
+  for(const f of foods) {
     if(!byDate.has(f.expiry)) byDate.set(f.expiry,[]);
     byDate.get(f.expiry).push(f);
   }
@@ -5185,7 +5438,7 @@ function renderCalendar() {
                     </span>`
                  : ''
                }
-               <span>${escapeHtml(f.name)} ×${f.qty}</span>
+               <span>${escapeHtml(f.name)}${isConsumedFood(f)?' · 已用完':` ×${f.qty}`}</span>
              </div>
            </div>`
         ).join('')}
@@ -5210,6 +5463,7 @@ function renderCalendar() {
 
 function render() {
   renderList();
+  renderConsumedList();
   renderCalendar();
 }
 
@@ -5236,9 +5490,27 @@ $('foodPageSize').onchange=()=>{
   const next=Number($('foodPageSize').value);
   foodPageSize=[10,20,50].includes(next) ? next : 10;
   foodCurrentPage=1;
+  consumedCurrentPage=1;
   try { localStorage.setItem(FOOD_PAGE_SIZE_KEY,String(foodPageSize)); } catch(_) {}
   renderList();
+  renderConsumedList();
 };
+
+$('consumedPageSize').value=String(foodPageSize);
+$('consumedPageSize').onchange=()=>{
+  const next=Number($('consumedPageSize').value);
+  foodPageSize=[10,20,50].includes(next) ? next : 10;
+  foodCurrentPage=1;
+  consumedCurrentPage=1;
+  try { localStorage.setItem(FOOD_PAGE_SIZE_KEY,String(foodPageSize)); } catch(_) {}
+  renderList();
+  renderConsumedList();
+};
+
+$('consumedSearch').addEventListener('input',()=>{
+  consumedCurrentPage=1;
+  renderConsumedList();
+});
 
 $('foodPrevPage').onclick=()=>{
   if(foodCurrentPage<=1) return;
@@ -5253,6 +5525,21 @@ $('foodNextPage').onclick=()=>{
   foodCurrentPage++;
   renderList();
   $('listSection').scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+$('consumedPrevPage').onclick=()=>{
+  if(consumedCurrentPage<=1) return;
+  consumedCurrentPage--;
+  renderConsumedList();
+  $('consumedSection').scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+$('consumedNextPage').onclick=()=>{
+  const totalPages=Math.max(1,Math.ceil(getFilteredConsumedFoods().length/foodPageSize));
+  if(consumedCurrentPage>=totalPages) return;
+  consumedCurrentPage++;
+  renderConsumedList();
+  $('consumedSection').scrollIntoView({behavior:'smooth',block:'start'});
 };
 
 $('foodFilterClear').onclick=()=>{
@@ -5298,19 +5585,35 @@ $('calendarWeekMode').onclick=()=>setCalendarMode('week');
 $('listTab').onclick=()=>{
   show('listSection');
   show('calendarView',false);
+  show('consumedSection',false);
 
   $('listTab').className='active';
   $('calendarTab').className='inactive';
+  $('consumedTab').className='inactive';
 };
 
 $('calendarTab').onclick=()=>{
   show('listSection',false);
   show('calendarView');
+  show('consumedSection',false);
 
   $('listTab').className='inactive';
   $('calendarTab').className='active';
+  $('consumedTab').className='inactive';
 
   renderCalendar();
+};
+
+$('consumedTab').onclick=()=>{
+  show('listSection',false);
+  show('calendarView',false);
+  show('consumedSection');
+
+  $('listTab').className='inactive';
+  $('calendarTab').className='inactive';
+  $('consumedTab').className='active';
+
+  renderConsumedList();
 };
 
 $('prevMonth').onclick=()=>{
