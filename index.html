@@ -1640,10 +1640,9 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
   }
 }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
-<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-retry-admin-20260930">
+<div class="app" data-build="v4.4-pagination-consumed-history-calendarfix-retry-admin-tesseract-selfhost-20261001">
 
 <section id="splash" class="card splash hidden">
   <div class="brand-hero product-only">
@@ -2614,9 +2613,16 @@ const I18N_EN = {
   "模型已快取，正在初始化 PP-OCRv6 與執行元件…": "Model cached. Initializing PP-OCRv6 and runtime components…",
   "✅ OCR 離線包已準備完成。之後會優先從手機快取讀取。": "✅ OCR offline pack is ready. It will be loaded from device cache whenever possible.",
   "✅ 已下載。模型本體約 6.3 MB；正常情況下之後會直接從手機快取讀取。": "✅ Downloaded. The model is about 6.3 MB and should load directly from device cache afterward.",
+  "✅ PP-OCR 模型已下載並通過檢查（約 6.3 MB）。": "✅ The PP-OCR models are downloaded and verified (about 6.3 MB).",
+  "✅ PP-OCR 模型已下載完成，且本次初始化成功。": "✅ The PP-OCR models are downloaded and initialization succeeded this time.",
+  "PP-OCRv6 模型已下載，但執行元件載入失敗（可能是網路 / CDN 連線問題），正在改用 Tesseract 備援…": "The PP-OCRv6 models are downloaded, but runtime components failed to load (possibly a network/CDN issue). Falling back to Tesseract…",
+  "PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；已由 Tesseract 備援找到日期候選。": "The PP-OCRv6 models are downloaded, but runtime components failed to load from the network/CDN. Tesseract fallback found a date candidate.",
+  "PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 找到候選，請人工確認。": "The PP-OCRv6 models are downloaded, but runtime components failed to load from the network/CDN. Tesseract found a candidate; please verify it.",
+  "PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 也沒有找到完整日期。可調整框選範圍、按「加強辨識」，或直接手動輸入。": "The PP-OCRv6 models are downloaded, but runtime components failed to load from the network/CDN. Tesseract also did not find a complete date. Adjust the selection, use Enhanced recognition, or enter the date manually.",
+  "PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 也沒有取得完整日期。請調整框選範圍或直接手動輸入。": "The PP-OCRv6 models are downloaded, but runtime components failed to load from the network/CDN. Tesseract also did not obtain a complete date. Adjust the selection or enter the date manually.",
   "⚠ 尚未下載。模型本體約 6.3 MB，另含首次需要的 OCR 執行元件；建議連 Wi‑Fi 後下載。": "⚠ Not downloaded. The model is about 6.3 MB plus first-use OCR runtime components; Wi‑Fi is recommended.",
   "Service Worker 尚未取得控制權。請重新整理頁面後再按一次下載。": "The Service Worker is not controlling the page yet. Reload the page and try the download again.",
-  "Service Worker 尚未就緒，為避免重新使用網路下載 OCR 資源，這次先不啟動 PP-OCRv6。": "The Service Worker is not ready. PP-OCRv6 will not start this time to avoid downloading OCR resources again.",
+  "Service Worker 尚未就緒，PP-OCRv6 暫時無法啟動。": "The Service Worker is not ready. PP-OCRv6 cannot start right now.",
   "此瀏覽器不支援 Cache Storage，PP-OCR 將無法使用離線包。": "This browser does not support Cache Storage, so PP-OCR cannot use the offline pack.",
   "離線模型需要在 GitHub Pages（HTTPS）上使用；直接雙擊 HTML 無法啟用。": "The offline model requires an HTTPS site such as GitHub Pages; it cannot be enabled by opening the HTML file directly.",
   "PP-OCRv6 離線包尚未下載。為避免使用行動網路，系統不會自動下載模型。": "The PP-OCRv6 offline pack has not been downloaded. To avoid mobile data usage, the model will not download automatically.",
@@ -7519,16 +7525,118 @@ function waitForOpenCv(timeoutMs = 12000) {
   return cvReadyPromise;
 }
 
+const TESSERACT_LOCAL = {
+  main:new URL(
+    './vendor/tesseract/tesseract.min.js',
+    location.href
+  ).href,
+  worker:new URL(
+    './vendor/tesseract/worker.min.js',
+    location.href
+  ).href,
+  core:new URL(
+    './vendor/tesseract/core/',
+    location.href
+  ).href,
+  lang:new URL(
+    './vendor/tesseract/lang',
+    location.href
+  ).href.replace(/\/$/,'')
+};
+
+let tesseractScriptLoadPromise = null;
 let dateOcrWorker = null;
 let dateOcrWorkerInitPromise = null;
 
+async function ensureTesseractLoaded() {
+  if (
+    window.Tesseract &&
+    typeof window.Tesseract.createWorker === 'function'
+  ) {
+    return window.Tesseract;
+  }
+
+  if (!tesseractScriptLoadPromise) {
+    tesseractScriptLoadPromise = new Promise((resolve,reject)=>{
+      const existing=document.querySelector(
+        'script[data-selfhosted-tesseract="1"]'
+      );
+
+      if (existing) {
+        existing.addEventListener('load',()=>{
+          if (
+            window.Tesseract &&
+            typeof window.Tesseract.createWorker === 'function'
+          ) {
+            resolve(window.Tesseract);
+          } else {
+            reject(new Error(
+              'Tesseract 主程式已載入，但沒有取得 Tesseract API。'
+            ));
+          }
+        },{once:true});
+
+        existing.addEventListener('error',()=>{
+          reject(new Error(
+            '無法載入本機 Tesseract 主程式：' +
+            TESSERACT_LOCAL.main
+          ));
+        },{once:true});
+
+        return;
+      }
+
+      const script=document.createElement('script');
+      script.src=TESSERACT_LOCAL.main;
+      script.async=true;
+      script.dataset.selfhostedTesseract='1';
+
+      script.onload=()=>{
+        if (
+          window.Tesseract &&
+          typeof window.Tesseract.createWorker === 'function'
+        ) {
+          resolve(window.Tesseract);
+        } else {
+          reject(new Error(
+            'Tesseract 主程式已載入，但沒有取得 Tesseract API。'
+          ));
+        }
+      };
+
+      script.onerror=()=>{
+        script.remove();
+        reject(new Error(
+          '無法載入本機 Tesseract。請確認 GitHub Pages 已上傳 ' +
+          'vendor/tesseract/ 目錄。'
+        ));
+      };
+
+      document.head.appendChild(script);
+    }).catch(e=>{
+      tesseractScriptLoadPromise=null;
+      throw e;
+    });
+  }
+
+  return tesseractScriptLoadPromise;
+}
+
 async function getDateOcrWorker(logger) {
+  window.__dateOcrLogger =
+    typeof logger === 'function' ? logger : null;
+
   if (dateOcrWorker) return dateOcrWorker;
 
   if (!dateOcrWorkerInitPromise) {
     dateOcrWorkerInitPromise = (async () => {
-      const worker = await Tesseract.createWorker('eng', 1, {
-        logger: m => {
+      const TesseractApi=await ensureTesseractLoaded();
+
+      const worker = await TesseractApi.createWorker('eng', 1, {
+        workerPath:TESSERACT_LOCAL.worker,
+        corePath:TESSERACT_LOCAL.core,
+        langPath:TESSERACT_LOCAL.lang,
+        logger:m=>{
           if (typeof window.__dateOcrLogger === 'function') {
             window.__dateOcrLogger(m);
           }
@@ -7544,10 +7652,6 @@ async function getDateOcrWorker(logger) {
       dateOcrWorker = worker;
       return worker;
     })();
-  }
-
-  if (typeof logger === 'function') {
-    window.__dateOcrLogger = logger;
   }
 
   try {
@@ -7720,7 +7824,7 @@ async function refreshOcrOfflineStatus() {
     if (state.ready) {
       status.className='ocr-offline-status ok';
       status.textContent =
-        '✅ 已下載。模型本體約 6.3 MB；正常情況下之後會直接從手機快取讀取。';
+        '✅ PP-OCR 模型已下載並通過檢查（約 6.3 MB）。';
       btn.textContent='重新檢查';
     } else if (state.modelCount > 0) {
       status.className='ocr-offline-status warn';
@@ -7841,7 +7945,7 @@ async function getPaddleOcr() {
 
   if (!controlled) {
     throw new Error(
-      'Service Worker 尚未就緒，為避免重新使用網路下載 OCR 資源，這次先不啟動 PP-OCRv6。'
+      'Service Worker 尚未就緒，PP-OCRv6 暫時無法啟動。'
     );
   }
 
@@ -7933,7 +8037,7 @@ async function downloadOcrOfflinePack() {
 
     status.className='ocr-offline-status ok';
     status.textContent =
-      '✅ OCR 離線包已準備完成。之後會優先從手機快取讀取。';
+      '✅ PP-OCR 模型已下載完成，且本次初始化成功。';
 
     btn.textContent='重新檢查';
 
@@ -8003,13 +8107,21 @@ function paddleItemsToDebugText(items) {
 }
 
 async function runGeneralOcr(canvas, logger, langs = 'eng') {
-  return Tesseract.recognize(
-    canvas,
-    langs,
-    {
-      logger
-    }
-  );
+  if (String(langs||'eng') !== 'eng') {
+    throw new Error('目前自架 Tesseract 僅安裝 eng 語言資料。');
+  }
+
+  const worker=await getDateOcrWorker(logger);
+
+  // 模擬原本 Tesseract.recognize() 的一般辨識設定，
+  // 但沿用同一個 Worker，不再每次重新建立 Worker。
+  await worker.setParameters({
+    tessedit_char_whitelist:'',
+    tessedit_pageseg_mode:'6',
+    preserve_interword_spaces:'0'
+  });
+
+  return worker.recognize(canvas);
 }
 
 function collectGeneralDateCandidates(ocrRuns) {
@@ -8828,6 +8940,34 @@ function buildOcrCandidateUi(votes, ocrRuns) {
   return 'full';
 }
 
+function isPaddleRuntimeNetworkError(error) {
+  const message = String(error?.message || error || '');
+  return /Failed to fetch dynamically imported module|ERR_SSL_PROTOCOL_ERROR|Failed to fetch|NetworkError|network error|Importing a module script failed|Load failed/i.test(message);
+}
+
+function paddleFailureRawText(error) {
+  const detail = String(error?.message || error || '未知錯誤');
+
+  if (isPaddleRuntimeNetworkError(error)) {
+    return [
+      '模型狀態：已下載 / 已通過目前的模型快取檢查',
+      '執行狀態：PP-OCR 執行元件載入失敗（可能是網路 / CDN 連線問題）',
+      '處理方式：本次自動改用 Tesseract 備援',
+      '詳細錯誤：' + detail
+    ].join('\n');
+  }
+
+  return '執行失敗：' + detail;
+}
+
+function paddleFallbackProgressText(error) {
+  if (isPaddleRuntimeNetworkError(error)) {
+    return 'PP-OCRv6 模型已下載，但執行元件載入失敗（可能是網路 / CDN 連線問題），正在改用 Tesseract 備援…';
+  }
+
+  return 'PP-OCRv6 無法執行，正在改用 Tesseract 備援…';
+}
+
 $('ocrStartBtn').onclick = async () => {
   if (!ocrImage) return;
 
@@ -8884,7 +9024,7 @@ $('ocrStartBtn').onclick = async () => {
       setStatus(
         'ocrStatus',
         paddleError
-          ? 'PP-OCRv6 無法執行，正在改用 Tesseract 備援…'
+          ? paddleFallbackProgressText(paddleError)
           : 'PP-OCRv6 沒找到完整日期，正在用 Tesseract 再確認…'
       );
 
@@ -8933,8 +9073,7 @@ $('ocrStartBtn').onclick = async () => {
     } else {
       raw +=
         '[PP-OCRv6]\n' +
-        '執行失敗：' +
-        (paddleError?.message || '未知錯誤');
+        paddleFailureRawText(paddleError);
     }
 
     if (tessText) {
@@ -8974,7 +9113,9 @@ $('ocrStartBtn').onclick = async () => {
       } else {
         setStatus(
           'ocrStatus',
-          'PP-OCRv6 沒找到完整日期；Tesseract 備援找到候選。',
+          paddleError && isPaddleRuntimeNetworkError(paddleError)
+            ? 'PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；已由 Tesseract 備援找到日期候選。'
+            : 'PP-OCRv6 沒找到完整日期；Tesseract 備援找到候選。',
           'ok'
         );
       }
@@ -8987,7 +9128,9 @@ $('ocrStartBtn').onclick = async () => {
     } else {
       setStatus(
         'ocrStatus',
-        '兩套 OCR 都沒有找到完整日期。可調整框選範圍、按「加強辨識」，或直接手動輸入。',
+        paddleError && isPaddleRuntimeNetworkError(paddleError)
+          ? 'PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 也沒有找到完整日期。可調整框選範圍、按「加強辨識」，或直接手動輸入。'
+          : '兩套 OCR 都沒有找到完整日期。可調整框選範圍、按「加強辨識」，或直接手動輸入。',
         'err'
       );
     }
@@ -9112,8 +9255,7 @@ $('ocrAdvancedBtn').onclick = async () => {
       (
         paddleResult
           ? paddleItemsToDebugText(paddleResult.items)
-          : '執行失敗：' +
-            (paddleError?.message || '未知錯誤')
+          : paddleFailureRawText(paddleError)
       );
 
     raw +=
@@ -9162,7 +9304,9 @@ $('ocrAdvancedBtn').onclick = async () => {
       } else if (tessTop) {
         setStatus(
           'ocrStatus',
-          'PP-OCRv6 沒找到完整日期，Tesseract 找到候選，請人工確認。',
+          paddleError && isPaddleRuntimeNetworkError(paddleError)
+            ? 'PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 找到候選，請人工確認。'
+            : 'PP-OCRv6 沒找到完整日期，Tesseract 找到候選，請人工確認。',
           'ok'
         );
       } else {
@@ -9181,7 +9325,9 @@ $('ocrAdvancedBtn').onclick = async () => {
     } else {
       setStatus(
         'ocrStatus',
-        '兩套 OCR 都沒有取得完整日期。請調整框選範圍或直接手動輸入。',
+        paddleError && isPaddleRuntimeNetworkError(paddleError)
+          ? 'PP-OCRv6 模型已下載，但執行元件因網路 / CDN 載入失敗；Tesseract 也沒有取得完整日期。請調整框選範圍或直接手動輸入。'
+          : '兩套 OCR 都沒有取得完整日期。請調整框選範圍或直接手動輸入。',
         'err'
       );
     }
