@@ -2287,6 +2287,7 @@ html[data-theme="dark"] .danger-zone {background:#351F2B;border-color:#704050}
 const API_URL = 'https://script.google.com/macros/s/AKfycbxMp1YIOLoc2WIFO5lL7Ebuj3iq5uG_gQwCIeap8Ugp4aFi4dX2yEOIRB_iQeOrsfmN/exec';
 const TOKEN_KEY = 'food-family-session-v3';
 const LAST_EMAIL_KEY = 'food-family-last-email-v1';
+const PENDING_CHANGES_STORAGE_KEY = 'food-family-pending-changes-v1';
 const SYNC_DELAY_MS = 30000;
 const SYNC_REQUEST_TIMEOUT_MS = 60000;
 
@@ -3185,8 +3186,164 @@ function setSyncState(state,text) {
   }
 }
 
+function pendingQueueKey(userId,familyId) {
+  return `${String(userId||'')}::${String(familyId||'')}`;
+}
+
+function readPendingChangeStore() {
+  try {
+    const parsed=JSON.parse(
+      localStorage.getItem(PENDING_CHANGES_STORAGE_KEY) || '{}'
+    );
+
+    return {
+      version:1,
+      queues:
+        parsed && parsed.queues && typeof parsed.queues==='object'
+          ? parsed.queues
+          : {}
+    };
+  } catch(e) {
+    console.warn('待同步資料讀取失敗：',e);
+    return {version:1,queues:{}};
+  }
+}
+
+function writePendingChangeStore(store) {
+  try {
+    const queues=store?.queues || {};
+
+    if(Object.keys(queues).length) {
+      localStorage.setItem(
+        PENDING_CHANGES_STORAGE_KEY,
+        JSON.stringify({version:1,queues})
+      );
+    } else {
+      localStorage.removeItem(PENDING_CHANGES_STORAGE_KEY);
+    }
+
+    return true;
+  } catch(e) {
+    console.warn('待同步資料保存失敗：',e);
+    return false;
+  }
+}
+
+function validStoredChanges(value) {
+  if(!Array.isArray(value)) return [];
+
+  return value.filter(ch =>
+    ch &&
+    typeof ch==='object' &&
+    ['add','update','delete'].includes(ch.type) &&
+    String(ch.clientKey||'')
+  );
+}
+
+function persistPendingChanges() {
+  const userId=String(me?.userId||'');
+  const familyId=String(currentFamilyId||'');
+  if(!userId || !familyId) return false;
+
+  const store=readPendingChangeStore();
+  const key=pendingQueueKey(userId,familyId);
+
+  if(pendingChanges.length) {
+    store.queues[key]={
+      userId,
+      familyId,
+      changes:pendingChanges.map(ch=>
+        JSON.parse(JSON.stringify(ch))
+      ),
+      savedAt:new Date().toISOString()
+    };
+  } else {
+    delete store.queues[key];
+  }
+
+  return writePendingChangeStore(store);
+}
+
+function storedPendingChanges(userId,familyId) {
+  const store=readPendingChangeStore();
+  const entry=store.queues[pendingQueueKey(userId,familyId)];
+
+  if(
+    !entry ||
+    String(entry.userId||'')!==String(userId||'') ||
+    String(entry.familyId||'')!==String(familyId||'')
+  ) {
+    return [];
+  }
+
+  return validStoredChanges(entry.changes).map(ch=>
+    JSON.parse(JSON.stringify(ch))
+  );
+}
+
+function storedPendingFamilyId(userId,families) {
+  const allowed=new Set((families||[]).map(f=>String(f.familyId||'')));
+  const entries=Object.values(readPendingChangeStore().queues)
+    .filter(entry =>
+      entry &&
+      String(entry.userId||'')===String(userId||'') &&
+      allowed.has(String(entry.familyId||'')) &&
+      validStoredChanges(entry.changes).length
+    )
+    .sort((a,b)=>
+      String(b.savedAt||'').localeCompare(String(a.savedAt||''))
+    );
+
+  return entries.length ? String(entries[0].familyId||'') : '';
+}
+
+function restorePendingChangesForCurrentFamily() {
+  pendingChanges=storedPendingChanges(
+    me?.userId,
+    currentFamilyId
+  );
+
+  return pendingChanges.length;
+}
+
+function replayPendingChangesOnFoods() {
+  for(const ch of pendingChanges) {
+    if(ch.type==='add') {
+      const tempId=String(ch.tempId||'');
+      if(!tempId || foods.some(f=>f.id===tempId)) continue;
+
+      foods.push({
+        id:tempId,
+        ...(ch.food||{}),
+        updatedAt:'',
+        _pending:true
+      });
+      continue;
+    }
+
+    if(ch.type==='update') {
+      const i=foods.findIndex(f=>f.id===String(ch.id||''));
+      if(i<0) continue;
+
+      foods[i]={
+        ...foods[i],
+        ...(ch.food||{}),
+        id:foods[i].id,
+        _pending:true
+      };
+      continue;
+    }
+
+    if(ch.type==='delete') {
+      foods=foods.filter(f=>f.id!==String(ch.id||''));
+    }
+  }
+}
+
 function scheduleSync() {
   if (syncTimer) clearTimeout(syncTimer);
+
+  persistPendingChanges();
 
   setSyncState(
     'dirty',
@@ -3232,7 +3389,8 @@ async function syncPending() {
 
   // 深拷貝本次送出的內容。同步等待期間若使用者又編輯同一筆資料，
   // pendingChanges 會保留較新的版本，不會被舊回應誤刪或覆蓋。
-  const batch = pendingChanges.map(ch =>
+  // 後端單次最多接受 100 筆；離線累積較多時分批送出。
+  const batch = pendingChanges.slice(0,100).map(ch =>
     JSON.parse(JSON.stringify(ch))
   );
 
@@ -3262,6 +3420,7 @@ async function syncPending() {
       !appliedKeys.has(ch.clientKey) ||
       changedDuringSyncKeys.has(ch.clientKey)
     );
+    persistPendingChanges();
 
     // 後端回傳正式資料，直接套回本地，包含 tmp id -> 正式 id。
     // 若同一筆在等待回應期間又被編輯，先保留本機最新版，下一輪同步再套用。
@@ -3271,12 +3430,16 @@ async function syncPending() {
       }
 
       if (item.tempId) {
-        const f = foods.find(x=>x.id===item.tempId);
-        if (f) {
-          Object.assign(f,item.food);
+        const tempIndex=foods.findIndex(x=>x.id===item.tempId);
+        const savedIndex=foods.findIndex((x,i)=>
+          i!==tempIndex && item.food && x.id===item.food.id
+        );
 
-          // 新增資料同步成功後，清除前端待同步標記。
-          delete f._pending;
+        if(savedIndex>=0) {
+          foods[savedIndex]=item.food;
+          if(tempIndex>=0) foods.splice(tempIndex,1);
+        } else if(tempIndex>=0) {
+          foods[tempIndex]=item.food;
         }
       } else if (item.food) {
         const i=foods.findIndex(x=>x.id===item.food.id);
@@ -3303,6 +3466,7 @@ async function syncPending() {
       // 權限可能已被另一台裝置改成 Viewer。
       // 本地未同步變更不能繼續保留，否則會無限重試。
       pendingChanges=[];
+      persistPendingChanges();
       if(syncTimer) clearTimeout(syncTimer);
       syncTimer=null;
 
@@ -3567,7 +3731,12 @@ function renderFamilies(families) {
     o.value=f.familyId; o.textContent=f.familyName; sel.appendChild(o);
   }
 
-  currentFamilyId=(families.find(x=>x.familyId===currentFamilyId)||families[0]).familyId;
+  const pendingFamilyId=storedPendingFamilyId(me.userId,families);
+  currentFamilyId=(
+    families.find(x=>x.familyId===currentFamilyId) ||
+    families.find(x=>x.familyId===pendingFamilyId) ||
+    families[0]
+  ).familyId;
   sel.value=currentFamilyId;
   loadFamily();
 }
@@ -4885,12 +5054,18 @@ async function loadFamily(retryCount = 0) {
     }
 
     foods=r.foods||[];
+    const restoredCount=restorePendingChangesForCurrentFamily();
+    if(restoredCount) replayPendingChangesOnFoods();
     applyRoleUi();
     render();
 
     loadFailed=false;
     setStatus('foodStatus','');
-    setSyncState('synced','已同步');
+    if(restoredCount) {
+      scheduleSync();
+    } else {
+      setSyncState('synced','已同步');
+    }
   } catch(e) {
     // Apps Script 偶爾冷啟動，第一次失敗時自動再試一次。
     if (retryCount < 1) {
@@ -5076,7 +5251,10 @@ window.removeFood=id=>{
 
     pendingChanges=pendingChanges.filter(x=>x.tempId!==id);
     if(pendingChanges.length) scheduleSync();
-    else setSyncState('synced','已同步');
+    else {
+      persistPendingChanges();
+      setSyncState('synced','已同步');
+    }
   } else {
     queueChange({
       clientKey:requestUid(),
