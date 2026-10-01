@@ -2562,8 +2562,8 @@ const I18N_EN = {
   "辨識完成，請確認候選日期。": "Recognition complete. Please confirm the candidate date.",
   "沒有找到日期候選。": "No date candidates found.",
   "沒有找到可信的日期候選。": "No reliable date candidates found.",
-  "OCR 沒有找到完整日期，但已將辨識到的年份與月 / 日組合成候選。請人工確認後再套用。": "OCR did not find a complete date, but recognized year and month/day fragments were combined into candidates. Please verify before applying.",
-  "年份與月 / 日來自不同辨識片段，請人工確認。": "The year and month/day came from separate recognition fragments. Please verify them manually.",
+  "OCR 沒有找到完整單行日期，已將分段辨識到的年份與月 / 日組合成低優先候選。請人工確認後再套用。": "OCR did not find a complete date, but recognized year and month/day fragments were combined into candidates. Please verify before applying.",
+  "年份與月 / 日來自不同辨識片段（低優先補救），請人工確認。": "The year and month/day came from separate recognition fragments. Please verify them manually.",
   "辨識到多個日期候選，請人工確認後再套用。": "Multiple date candidates were found. Please verify before applying.",
   "兩套 OCR 都沒有找到完整日期。可調整框選範圍、按「加強辨識」，或直接手動輸入。": "Neither OCR engine found a complete date. Adjust the selection, use Enhanced recognition, or enter the date manually.",
   "兩套 OCR 都沒有取得完整日期。請調整框選範圍或直接手動輸入。": "Neither OCR engine obtained a complete date. Adjust the selection or enter the date manually.",
@@ -8634,7 +8634,7 @@ function findPartialDateHints(ocrRuns) {
       if (yToken.length === 4) {
         const y = Number(yToken);
 
-        if (y >= 2000 && y <= 2100) {
+        if (y >= 1900 && y <= 2100) {
           yearVotes.set(
             String(y),
             (yearVotes.get(String(y)) || 0) + 1
@@ -8674,12 +8674,29 @@ function findPartialDateHints(ocrRuns) {
       addMonthDay(mo,d);
     }
 
-    const yRe = /\b(20\d{2})\b/g;
+    // 月份在前的英文月 / 日，例如：
+    // JUL 11
+    // SEP 03
+    // OCT. 7
+    // 這類只作為「分段日期」提示；若同一張圖已辨識到完整單行日期，
+    // buildOcrCandidateUi() 會優先使用完整日期，不會讓此補救結果蓋過它。
+    const englishMonthFirstMdRe =
+      /\b(JAN(?:UARY)?|FEB(?:RUARY)?|MAR(?:CH)?|APR(?:IL)?|MAY|JUN(?:E)?|JUL(?:Y)?|AUG(?:UST)?|SEP(?:T(?:EMBER)?)?|OCT(?:OBER)?|NOV(?:EMBER)?|DEC(?:EMBER)?)\.?\s*[-./ ]\s*([0-3]?\d)(?:st|nd|rd|th)?\b/gi;
+
+    while ((m = englishMonthFirstMdRe.exec(t))) {
+      const mo = monthMap[m[1].toUpperCase()];
+      const d = Number(m[2]);
+      addMonthDay(mo,d);
+    }
+
+    // 分段補救接受 1900~2100 的四位年份。
+    // 這不會改變完整單行日期的既有優先順序，只在沒有完整日期時使用。
+    const yRe = /\b(19\d{2}|20\d{2}|2100)\b/g;
 
     while ((m = yRe.exec(t))) {
       const y = Number(m[1]);
 
-      if (y >= 2000 && y <= 2100) {
+      if (y >= 1900 && y <= 2100) {
         yearVotes.set(
           String(y),
           (yearVotes.get(String(y)) || 0) + 1
@@ -8742,7 +8759,7 @@ function buildPartialOcrCandidates(hints) {
         source:`OCR 分段組合：${year} + ${md}`,
         score:Number(yearVotes||0)+Number(mdVotes||0),
         votes:Math.min(Number(yearVotes||0),Number(mdVotes||0)),
-        notes:['年份與月 / 日來自不同辨識片段，請人工確認。'],
+        notes:['年份與月 / 日來自不同辨識片段（低優先補救），請人工確認。'],
         formats:['partial-year-month-day']
       });
     }
@@ -8792,7 +8809,7 @@ function buildOcrCandidateUi(votes, ocrRuns) {
 
       box.innerHTML = `
         <div class="small" style="margin-bottom:8px;color:#9a6414">
-          OCR 沒有找到完整日期，但已將辨識到的年份與月 / 日組合成候選。請人工確認後再套用。
+          OCR 沒有找到完整單行日期，已將分段辨識到的年份與月 / 日組合成低優先候選。請人工確認後再套用。
         </div>
         ${hintHtml}
         ${ocrCandidates.map((c,i)=>`
@@ -8807,7 +8824,7 @@ function buildOcrCandidateUi(votes, ocrRuns) {
               <b>${c.iso}</b>
               <div class="small">${escapeHtml(c.source || '')}</div>
               <div class="small" style="margin-top:3px;color:#9a6414">
-                年份與月 / 日來自不同辨識片段，請人工確認。
+                年份與月 / 日來自不同辨識片段（低優先補救），請人工確認。
               </div>
             </div>
           </label>
@@ -9122,7 +9139,7 @@ $('ocrStartBtn').onclick = async () => {
     } else if (candidateMode==='partial') {
       setStatus(
         'ocrStatus',
-        'OCR 沒有找到完整日期，但已將辨識到的年份與月 / 日組合成候選。請人工確認後再套用。',
+        'OCR 沒有找到完整單行日期，已將分段辨識到的年份與月 / 日組合成低優先候選。請人工確認後再套用。',
         ''
       );
     } else {
@@ -9319,7 +9336,7 @@ $('ocrAdvancedBtn').onclick = async () => {
     } else if (candidateMode==='partial') {
       setStatus(
         'ocrStatus',
-        'OCR 沒有找到完整日期，但已將辨識到的年份與月 / 日組合成候選。請人工確認後再套用。',
+        'OCR 沒有找到完整單行日期，已將分段辨識到的年份與月 / 日組合成低優先候選。請人工確認後再套用。',
         ''
       );
     } else {
