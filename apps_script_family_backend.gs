@@ -10,7 +10,8 @@ const SHEETS = {
   NOTIFY_USER: 'NotificationUserSettings',
   NOTIFY_GROUP: 'NotificationGroupSettings',
   NOTIFY_LOG: 'NotificationLog',
-  FOOD_IMAGES: 'FoodImages'
+  FOOD_IMAGES: 'FoodImages',
+  IMAGE_BACKUPS: 'ImageBackupLog'
 };
 
 const SESSION_DAYS = 30;
@@ -27,9 +28,31 @@ const SESSION_CLEANUP_GRACE_DAYS = 14; // Session 到期後再保留 14 天
 const RESET_CLEANUP_DAYS = 7;
 const REQUEST_LOG_RETENTION_DAYS = 30;
 const NOTIFY_LOG_RETENTION_DAYS = 90;
-const PENDING_IMAGE_RETENTION_DAYS = 2;
+const ACTIVITY_LOG_RETENTION_DAYS = 90;
+const PENDING_IMAGE_RETENTION_DAYS = 14;
 const DELETED_IMAGE_META_RETENTION_DAYS = 35;
+const IMAGE_BACKUP_RETENTION_DAYS = 93;
 const MAX_PRODUCT_IMAGE_BYTES = 450000; // 前端正常約 50~150 KB，後端再設硬上限
+
+// 單次 Apps Script 執行上限通常為 6 分鐘。圖片備份主動在 4 分鐘內收尾，
+// 並限制每批數量，保留時間給狀態寫入與建立下一次續跑 Trigger。
+const IMAGE_BACKUP_BATCH_TIME_BUDGET_MS = 4*60*1000;
+const IMAGE_BACKUP_MAX_ITEMS_PER_BATCH = 50;
+const IMAGE_BACKUP_CONTINUATION_DELAY_MS = 2*60*1000;
+const IMAGE_BACKUP_MAX_FAILURE_RETRIES = 3;
+const IMAGE_BACKUP_RUN_STATE_KEY = 'IMAGE_BACKUP_RUN_STATE_V1';
+const IMAGE_BACKUP_CONTINUATION_HANDLER =
+  'continueWeeklyBackupAndMaintenance';
+
+const NOTIFICATION_LOG_HEADERS = [
+  'userId','familyId','foodId','expiry','daysBefore','sentAt','foodName','familyName'
+];
+
+const IMAGE_BACKUP_LOG_HEADERS = [
+  'imageId','familyId','foodId','sourceDriveFileId','backupFileId',
+  'mimeType','sizeBytes','sourceStatus','backedUpAt','updatedAt',
+  'deletedAt','lastError'
+];
 
 function setupDatabase() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -47,10 +70,10 @@ function setupDatabase() {
     ['familyId','userId','role','status','joinedAt']);
 
   ensureSheet_(ss, SHEETS.FOODS,
-    ['familyId','id','name','qty','location','expiry','note','createdBy','createAt','updatedAt','notifyMode','notifyDaysBefore','imageId']);
+    ['familyId','id','name','qty','location','expiry','note','createdBy','createAt','updatedAt','notifyMode','notifyDaysBefore','imageId','status','consumedAt']);
 
   ensureHeaders_(ss.getSheetByName(SHEETS.FOODS),
-    ['familyId','id','name','qty','location','expiry','note','createdBy','createAt','updatedAt','notifyMode','notifyDaysBefore','imageId']);
+    ['familyId','id','name','qty','location','expiry','note','createdBy','createAt','updatedAt','notifyMode','notifyDaysBefore','imageId','status','consumedAt']);
 
   ensureSheet_(ss, SHEETS.SESSIONS,
     ['sessionToken','userId','expiresAt','createdAt']);
@@ -71,10 +94,23 @@ function setupDatabase() {
     ['userId','familyId','enabled','defaultDaysBefore','updatedAt']);
 
   ensureSheet_(ss, SHEETS.NOTIFY_LOG,
-    ['userId','familyId','foodId','expiry','daysBefore','sentAt']);
+    NOTIFICATION_LOG_HEADERS);
+
+  ensureHeaders_(
+    ss.getSheetByName(SHEETS.NOTIFY_LOG),
+    NOTIFICATION_LOG_HEADERS
+  );
 
   ensureSheet_(ss, SHEETS.FOOD_IMAGES,
     ['imageId','familyId','foodId','driveFileId','mimeType','sizeBytes','width','height','status','uploadedBy','createdAt','updatedAt','deletedAt']);
+
+  ensureSheet_(ss, SHEETS.IMAGE_BACKUPS,
+    IMAGE_BACKUP_LOG_HEADERS);
+
+  ensureHeaders_(
+    ss.getSheetByName(SHEETS.IMAGE_BACKUPS),
+    IMAGE_BACKUP_LOG_HEADERS
+  );
 
   const props = PropertiesService.getScriptProperties();
 
@@ -95,9 +131,14 @@ function doGet() {
 }
 
 function doPost(e) {
+  let action='';
+
   try {
     const p = e.parameter || {};
-    const action = p.action || '';
+    action = p.action || '';
+
+    // 只記錄 API 動作名稱，不記 sessionToken、密碼或其他敏感資料。
+    console.log('API action: ' + action);
 
     if (action === 'register') return json_(register_(p));
     if (action === 'login') return json_(login_(p));
@@ -110,6 +151,12 @@ function doPost(e) {
     if (action === 'me') return json_(me_(user));
     if (action === 'getNotificationSettings') return json_(getNotificationSettings_(user));
     if (action === 'saveNotificationSettings') return json_(saveNotificationSettings_(user,p));
+
+    if (action === 'adminSummary') return json_(adminSummary_(user,p));
+    if (action === 'adminLogs') return json_(adminLogs_(user,p));
+    if (action === 'adminListAdmins') return json_(adminListAdmins_(user,p));
+    if (action === 'adminAddAdmin') return json_(adminAddAdmin_(user,p));
+    if (action === 'adminRemoveAdmin') return json_(adminRemoveAdmin_(user,p));
 
     if (action === 'uploadFoodImage') return json_(uploadFoodImage_(user,p));
     if (action === 'discardFoodImage') return json_(discardFoodImage_(user,p));
@@ -131,6 +178,10 @@ function doPost(e) {
 
     throw new Error('unknown action');
   } catch (err) {
+    console.error(
+      'API error (' + (action || 'unknown') + '): ' +
+      String(err.message || err)
+    );
     return json_({ ok:false, error:String(err.message || err) });
   }
 }
@@ -207,7 +258,7 @@ function login_(p) {
   return {
     ok:true,
     sessionToken:token,
-    user:publicUser_(user),
+    user:{...publicUser_(user),isAdmin:isAdmin_(user)},
     families:userFamilies_(user.userId)
   };
 }
@@ -332,11 +383,476 @@ function logout_(token) {
 }
 
 function me_(user) {
-  return { ok:true, user:publicUser_(user), families:userFamilies_(user.userId) };
+  return {
+    ok:true,
+    user:{...publicUser_(user),isAdmin:isAdmin_(user)},
+    families:userFamilies_(user.userId)
+  };
 }
 
 function publicUser_(user) {
   return { userId:user.userId,email:user.email,displayName:user.displayName };
+}
+
+// ---------------- ADMIN ----------------
+
+function getAdminUserIds_() {
+  const raw=String(
+    PropertiesService.getScriptProperties().getProperty('ADMIN_USER_IDS') || ''
+  );
+
+  return new Set(
+    raw
+      .split(',')
+      .map(x=>String(x||'').trim())
+      .filter(Boolean)
+  );
+}
+
+function saveAdminUserIds_(ids) {
+  const values=Array.from(ids||[])
+    .map(x=>String(x||'').trim())
+    .filter(Boolean)
+    .sort();
+
+  PropertiesService
+    .getScriptProperties()
+    .setProperty('ADMIN_USER_IDS',values.join(','));
+
+  return values;
+}
+
+function getPrimaryAdminUserId_() {
+  return String(
+    PropertiesService.getScriptProperties().getProperty('PRIMARY_ADMIN_USER_ID') || ''
+  ).trim();
+}
+
+function setPrimaryAdminUserId_(userId) {
+  const id=String(userId||'').trim();
+  if(!id) throw new Error('主要管理者 User ID 不可空白');
+
+  const props=PropertiesService.getScriptProperties();
+  const existing=String(props.getProperty('PRIMARY_ADMIN_USER_ID')||'').trim();
+
+  if(existing && existing!==id) {
+    throw new Error('主要管理者已設定，不能由程式自動覆寫');
+  }
+
+  props.setProperty('PRIMARY_ADMIN_USER_ID',id);
+  return id;
+}
+
+function isAdmin_(user) {
+  if(!user || !user.userId) return false;
+  return getAdminUserIds_().has(String(user.userId));
+}
+
+function requireAdmin_(user) {
+  if(!isAdmin_(user)) throw new Error('沒有系統管理權限');
+  return user;
+}
+
+// 第一次建立管理者時可直接從 Apps Script 編輯器執行。
+// 會以「目前執行 Apps Script 的 Google 帳號 Email」尋找本系統 Users。
+// 第一次成功執行時，該帳號也會被鎖定為 PRIMARY_ADMIN_USER_ID。
+// PRIMARY_ADMIN_USER_ID 不提供網站介面修改或刪除；需要更換時只能由 Script Properties 手動處理。
+// 若你的食品管理登入 Email 與 Apps Script 擁有者相同，執行一次即可。
+function setupCurrentGoogleAccountAsAdmin() {
+  const email=String(Session.getEffectiveUser().getEmail()||'')
+    .trim()
+    .toLowerCase();
+
+  if(!email) {
+    throw new Error('無法取得目前 Google 帳號 Email，請改用 Script Properties 手動設定 ADMIN_USER_IDS');
+  }
+
+  const user=rows_(SHEETS.USERS).find(x=>
+    String(x.email||'').trim().toLowerCase()===email &&
+    String(x.status||'')==='active'
+  );
+
+  if(!user) {
+    throw new Error(
+      '找不到相同 Email 的食品管理帳號：'+email+
+      '。請先用此 Email 建立食品管理帳號並登入一次，或手動設定 ADMIN_USER_IDS。'
+    );
+  }
+
+  const ids=getAdminUserIds_();
+  ids.add(String(user.userId));
+  const saved=saveAdminUserIds_(ids);
+
+  const existingPrimary=getPrimaryAdminUserId_();
+  const primaryUserId=existingPrimary || setPrimaryAdminUserId_(user.userId);
+
+  Logger.log(
+    'Admin enabled: '+user.displayName+' <'+user.email+'> '+user.userId+
+    ' | primaryAdmin='+primaryUserId
+  );
+
+  return {
+    ok:true,
+    userId:user.userId,
+    email:user.email,
+    displayName:user.displayName,
+    adminCount:saved.length,
+    primaryAdminUserId:primaryUserId,
+    isPrimary:String(primaryUserId)===String(user.userId)
+  };
+}
+
+function adminUserMaps_() {
+  const users=rows_(SHEETS.USERS);
+  const families=rows_(SHEETS.FAMILIES);
+  const foods=rows_(SHEETS.FOODS);
+  const activities=rows_(SHEETS.ACTIVITY)
+    .slice()
+    .sort((a,b)=>
+      (toMillis_(a.createdAt)||0)-(toMillis_(b.createdAt)||0)
+    );
+
+  const userMap={};
+  users.forEach(u=>{
+    userMap[String(u.userId)]={
+      userId:String(u.userId),
+      displayName:String(u.displayName||''),
+      email:String(u.email||''),
+      status:String(u.status||'')
+    };
+  });
+
+  // 先保留 ActivityLog 中曾經出現過的名稱，讓原始資料被刪除後仍能查 Log。
+  const historicalFamilyMap={};
+  const historicalFoodMap={};
+
+  activities.forEach(row=>{
+    const action=String(row.action||'');
+    const targetId=String(row.targetId||'');
+    const familyId=String(row.familyId||'');
+    const detail=String(row.detail||'').trim();
+
+    if(
+      detail &&
+      targetId &&
+      action.indexOf('food_')===0
+    ) {
+      // 依時間排序後覆寫，保留最後一次已知食品名稱。
+      historicalFoodMap[targetId]=detail;
+    }
+
+    if(
+      detail &&
+      familyId &&
+      ['family_create','family_rename','family_delete'].includes(action)
+    ) {
+      historicalFamilyMap[familyId]=detail;
+    }
+  });
+
+  const familyMap={...historicalFamilyMap};
+  families.forEach(f=>{
+    // 目前仍存在的群組資料優先。
+    familyMap[String(f.familyId)]=String(f.familyName||'');
+  });
+
+  const foodMap={...historicalFoodMap};
+  foods.forEach(f=>{
+    // 目前仍存在的食品資料優先。
+    foodMap[String(f.id)]=String(f.name||'');
+  });
+
+  return {
+    users,
+    families,
+    foods,
+    activities,
+    userMap,
+    familyMap,
+    foodMap,
+    historicalFamilyMap,
+    historicalFoodMap
+  };
+}
+
+function shortId_(value) {
+  const s=String(value||'');
+  if(s.length<=16) return s;
+  return s.slice(0,8)+'…'+s.slice(-4);
+}
+
+function adminActivityTargetLabel_(row,maps) {
+  const action=String(row.action||'');
+  const targetId=String(row.targetId||'');
+  const detail=String(row.detail||'');
+
+  if(action.indexOf('food_')===0) {
+    return detail || maps.foodMap[targetId] || shortId_(targetId);
+  }
+
+  if(
+    action.indexOf('member_')===0 ||
+    action==='family_join' ||
+    action==='family_leave'
+  ) {
+    const u=maps.userMap[targetId];
+    return u ? (u.displayName || u.email) : (detail || shortId_(targetId));
+  }
+
+  if(action.indexOf('family_')===0 || action==='invite_regenerate') {
+    return maps.familyMap[targetId] || detail || shortId_(targetId);
+  }
+
+  return detail || shortId_(targetId);
+}
+
+function adminSummary_(user,p) {
+  requireAdmin_(user);
+
+  const maps=adminUserMaps_();
+  const now=Date.now();
+  const sessions=rows_(SHEETS.SESSIONS);
+  const members=rows_(SHEETS.MEMBERS);
+
+  const activeFoods=maps.foods.filter(f=>
+    normalizeFoodStatus_(f.status)==='active'
+  ).length;
+
+  const consumedFoods=maps.foods.filter(f=>
+    normalizeFoodStatus_(f.status)==='consumed'
+  ).length;
+
+  const activeSessions=sessions.filter(s=>{
+    const expires=toMillis_(s.expiresAt);
+    return expires && expires>now;
+  }).length;
+
+  return {
+    ok:true,
+    summary:{
+      users:maps.users.filter(u=>String(u.status||'')==='active').length,
+      families:maps.families.length,
+      activeMembers:members.filter(m=>String(m.status||'')==='active').length,
+      activeFoods,
+      consumedFoods,
+      activeSessions,
+      activityLog:rows_(SHEETS.ACTIVITY).length,
+      requestLog:rows_(SHEETS.REQUESTS).length,
+      notificationLog:rows_(SHEETS.NOTIFY_LOG).length,
+      adminCount:getAdminUserIds_().size,
+      retentionDays:{
+        activity:ACTIVITY_LOG_RETENTION_DAYS,
+        request:REQUEST_LOG_RETENTION_DAYS,
+        notification:NOTIFY_LOG_RETENTION_DAYS
+      },
+      serverTime:isoNow_()
+    }
+  };
+}
+
+function adminLogs_(user,p) {
+  requireAdmin_(user);
+
+  const type=String(p.type||'activity');
+  if(!['activity','notification','request'].includes(type)) {
+    throw new Error('不支援的 Log 類型');
+  }
+
+  const page=Math.max(1,Math.floor(Number(p.page||1)));
+  const pageSize=Math.max(
+    10,
+    Math.min(100,Math.floor(Number(p.pageSize||20)))
+  );
+  const query=String(p.query||'').trim().toLowerCase();
+  const maps=adminUserMaps_();
+
+  let items=[];
+
+  if(type==='activity') {
+    items=rows_(SHEETS.ACTIVITY).map(row=>{
+      const u=maps.userMap[String(row.userId)]||{};
+      return {
+        time:String(row.createdAt||''),
+        familyId:String(row.familyId||''),
+        familyName:maps.familyMap[String(row.familyId)]||'',
+        userId:String(row.userId||''),
+        userName:String(u.displayName||''),
+        userEmail:String(u.email||''),
+        action:String(row.action||''),
+        targetId:String(row.targetId||''),
+        targetLabel:adminActivityTargetLabel_(row,maps),
+        detail:String(row.detail||'')
+      };
+    });
+  } else if(type==='notification') {
+    items=rows_(SHEETS.NOTIFY_LOG).map(row=>{
+      const u=maps.userMap[String(row.userId)]||{};
+      return {
+        time:String(row.sentAt||''),
+        familyId:String(row.familyId||''),
+        familyName:String(
+          row.familyName ||
+          maps.familyMap[String(row.familyId)] ||
+          ''
+        ),
+        userId:String(row.userId||''),
+        userName:String(u.displayName||''),
+        userEmail:String(u.email||''),
+        foodId:String(row.foodId||''),
+        foodName:String(
+          row.foodName ||
+          maps.foodMap[String(row.foodId)] ||
+          ''
+        ),
+        expiry:formatDate_(row.expiry),
+        daysBefore:Number(row.daysBefore||0)
+      };
+    });
+  } else {
+    items=rows_(SHEETS.REQUESTS).map(row=>{
+      const u=maps.userMap[String(row.userId)]||{};
+      return {
+        time:String(row.updatedAt||row.createdAt||''),
+        createdAt:String(row.createdAt||''),
+        updatedAt:String(row.updatedAt||''),
+        requestId:String(row.requestId||''),
+        requestIdShort:shortId_(row.requestId),
+        userId:String(row.userId||''),
+        userName:String(u.displayName||''),
+        userEmail:String(u.email||''),
+        action:String(row.action||''),
+        status:String(row.status||'')
+      };
+    });
+  }
+
+  if(query) {
+    items=items.filter(item=>
+      Object.values(item).some(value=>
+        String(value??'').toLowerCase().includes(query)
+      )
+    );
+  }
+
+  items.sort((a,b)=>
+    (toMillis_(b.time)||0)-(toMillis_(a.time)||0)
+  );
+
+  const total=items.length;
+  const totalPages=Math.max(1,Math.ceil(total/pageSize));
+  const safePage=Math.min(page,totalPages);
+  const start=(safePage-1)*pageSize;
+  const pageItems=items.slice(start,start+pageSize);
+
+  return {
+    ok:true,
+    type,
+    page:safePage,
+    pageSize,
+    total,
+    totalPages,
+    items:pageItems
+  };
+}
+
+function adminListAdmins_(user,p) {
+  requireAdmin_(user);
+
+  const ids=getAdminUserIds_();
+  const primaryUserId=getPrimaryAdminUserId_();
+  const users=rows_(SHEETS.USERS);
+  const admins=Array.from(ids).map(userId=>{
+    const u=users.find(x=>String(x.userId)===String(userId));
+    return {
+      userId:String(userId),
+      displayName:u ? String(u.displayName||'') : '',
+      email:u ? String(u.email||'') : '',
+      status:u ? String(u.status||'') : 'missing',
+      isSelf:String(userId)===String(user.userId),
+      isPrimary:Boolean(primaryUserId) && String(userId)===String(primaryUserId)
+    };
+  });
+
+  admins.sort((a,b)=>{
+    if(a.isPrimary!==b.isPrimary) return a.isPrimary ? -1 : 1;
+    return String(a.displayName||a.email||a.userId)
+      .localeCompare(String(b.displayName||b.email||b.userId));
+  });
+
+  return {
+    ok:true,
+    admins,
+    primaryConfigured:Boolean(primaryUserId)
+  };
+}
+
+function adminAddAdmin_(user,p) {
+  requireAdmin_(user);
+
+  const email=String(p.email||'').trim().toLowerCase();
+  if(!email) throw new Error('請輸入要設為管理者的 Email');
+
+  const target=rows_(SHEETS.USERS).find(x=>
+    String(x.email||'').trim().toLowerCase()===email &&
+    String(x.status||'')==='active'
+  );
+
+  if(!target) {
+    throw new Error('找不到這個已啟用的食品管理帳號');
+  }
+
+  const ids=getAdminUserIds_();
+  ids.add(String(target.userId));
+  saveAdminUserIds_(ids);
+
+  console.log(
+    'Admin added by '+user.userId+': '+target.userId
+  );
+
+  return {
+    ok:true,
+    added:{
+      userId:String(target.userId),
+      displayName:String(target.displayName||''),
+      email:String(target.email||'')
+    }
+  };
+}
+
+function adminRemoveAdmin_(user,p) {
+  requireAdmin_(user);
+
+  const targetUserId=String(p.userId||'').trim();
+  if(!targetUserId) throw new Error('缺少管理者 User ID');
+
+  const ids=getAdminUserIds_();
+  if(!ids.has(targetUserId)) return {ok:true,removed:false};
+
+  const primaryUserId=getPrimaryAdminUserId_();
+  if(!primaryUserId) {
+    throw new Error('尚未設定主要管理者，請先由 Apps Script 執行 setupCurrentGoogleAccountAsAdmin()');
+  }
+
+  if(targetUserId===primaryUserId) {
+    throw new Error('主要管理者不可移除');
+  }
+
+  if(ids.size<=1) {
+    throw new Error('至少要保留一位系統管理者');
+  }
+
+  ids.delete(targetUserId);
+  saveAdminUserIds_(ids);
+
+  console.log(
+    'Admin removed by '+user.userId+': '+targetUserId
+  );
+
+  return {
+    ok:true,
+    removed:true,
+    selfRemoved:targetUserId===String(user.userId)
+  };
 }
 
 // ---------------- NOTIFICATIONS ----------------
@@ -405,9 +921,15 @@ function setupNotificationTrigger() {
 }
 
 function checkExpiryNotifications() {
+  // 自動補齊 NotificationLog 的快照欄位，避免 Trigger 在升級後遇到舊 schema。
+  ensureNotificationLogSchema_();
+
   const tz=Session.getScriptTimeZone();
   const now=new Date();
   const currentHour=Number(Utilities.formatDate(now,tz,'H'));
+  let sentUsers=0;
+  let sentItems=0;
+  let failedUsers=0;
 
   const users=rows_(SHEETS.USERS).filter(x=>x.status==='active');
   const userSettings=rows_(SHEETS.NOTIFY_USER);
@@ -420,12 +942,17 @@ function checkExpiryNotifications() {
   for(const u of users) {
     const us=userSettings.find(x=>x.userId===u.userId);
     if(!us || !toBool_(us.emailEnabled)) continue;
-    if(Number(us.sendHour)!==currentHour) continue;
+
+    // Trigger 不保證精準在整點執行。設定時間之前不寄；設定時間之後若
+    // 當天尚未成功寄送，後續每小時執行時都可以補寄。
+    const sendHour=Math.max(0,Math.min(23,Number(us.sendHour||0)));
+    if(currentHour<sendHour) continue;
 
     const memberRows=memberships.filter(x=>x.userId===u.userId);
     if(!memberRows.length) continue;
 
     const items=[];
+    const queuedItemKeys=new Set();
 
     for(const m of memberRows) {
       const fam=families.find(x=>x.familyId===m.familyId);
@@ -436,7 +963,10 @@ function checkExpiryNotifications() {
       const defaultDays=gset ? Math.max(0,Math.min(365,Number(gset.defaultDaysBefore||3))) : 3;
       if(!enabled) continue;
 
-      const groupFoods=foods.filter(x=>x.familyId===m.familyId);
+      const groupFoods=foods.filter(x=>
+        x.familyId===m.familyId &&
+        normalizeFoodStatus_(x.status)==='active'
+      );
 
       for(const f of groupFoods) {
         const mode=String(f.notifyMode||'inherit');
@@ -447,7 +977,10 @@ function checkExpiryNotifications() {
           : defaultDays;
 
         const days=daysUntilDate_(f.expiry,tz);
-        if(days!==daysBefore) continue;
+
+        // 已進入提醒區間、但尚未過期的食品都可補寄。
+        // 例如設定提前 3 天，Trigger 在第 3 天失敗，第 2 天仍會補寄一次。
+        if(!Number.isFinite(days) || days<0 || days>daysBefore) continue;
 
         const already=logs.some(l=>
           l.userId===u.userId &&
@@ -459,6 +992,17 @@ function checkExpiryNotifications() {
 
         if(already) continue;
 
+        const itemKey=[
+          u.userId,
+          m.familyId,
+          f.id,
+          formatDate_(f.expiry),
+          daysBefore
+        ].join('|');
+
+        if(queuedItemKeys.has(itemKey)) continue;
+        queuedItemKeys.add(itemKey);
+
         items.push({
           familyId:m.familyId,
           familyName:fam.familyName,
@@ -466,7 +1010,8 @@ function checkExpiryNotifications() {
           name:f.name,
           qty:Number(f.qty||1),
           expiry:formatDate_(f.expiry),
-          daysBefore
+          daysBefore,
+          daysLeft:days
         });
       }
     }
@@ -484,24 +1029,164 @@ function checkExpiryNotifications() {
     Object.keys(grouped).forEach(groupName=>{
       body+='【'+groupName+'】\n';
       grouped[groupName].forEach(i=>{
-        const when=i.daysBefore===0 ? '今天到期' : '剩 '+i.daysBefore+' 天到期';
+        const when=i.daysLeft===0 ? '今天到期' : '剩 '+i.daysLeft+' 天到期';
         body+='- '+i.name+' ×'+i.qty+'：'+when+'（'+i.expiry+'）\n';
       });
       body+='\n';
     });
 
-    MailApp.sendEmail({
-      to:u.email,
-      subject:'食品過期提醒：'+items.length+' 項食品需要注意',
-      body
-    });
+    try {
+      MailApp.sendEmail({
+        to:u.email,
+        subject:'食品過期提醒：'+items.length+' 項食品需要注意',
+        body
+      });
 
-    items.forEach(i=>{
-      append_(SHEETS.NOTIFY_LOG,[
-        u.userId,i.familyId,i.foodId,i.expiry,i.daysBefore,isoNow_()
-      ]);
-    });
+      items.forEach(i=>{
+        append_(SHEETS.NOTIFY_LOG,[
+          u.userId,
+          i.familyId,
+          i.foodId,
+          i.expiry,
+          i.daysBefore,
+          isoNow_(),
+          i.name,
+          i.familyName
+        ]);
+
+        // 保持本次執行的記憶體快照與剛寫入的 Log 一致。
+        logs.push({
+          userId:u.userId,
+          familyId:i.familyId,
+          foodId:i.foodId,
+          expiry:i.expiry,
+          daysBefore:i.daysBefore
+        });
+      });
+
+      sentUsers++;
+      sentItems+=items.length;
+    } catch(err) {
+      failedUsers++;
+      console.error(
+        'Expiry notification failed for user '+u.userId+': '+
+        String(err.message||err)
+      );
+    }
   }
+
+  const result={
+    ok:failedUsers===0,
+    sentUsers,
+    sentItems,
+    failedUsers,
+    checkedAt:isoNow_()
+  };
+
+  console.log('Expiry notification result: '+JSON.stringify(result));
+  return result;
+}
+
+function ensureNotificationLogSchema_() {
+  const sh=sheet_(SHEETS.NOTIFY_LOG);
+  ensureHeaders_(sh,NOTIFICATION_LOG_HEADERS);
+  return sh;
+}
+
+// 升級後可手動執行一次：
+// 盡量替舊 NotificationLog 補上食品/群組名稱。
+// 能從目前資料或 ActivityLog 歷史推回的會自動補；
+// 已經完全沒有任何名稱線索的舊資料仍會保留空白並由管理頁顯示 ID。
+function backfillNotificationLogLabels() {
+  const sh=ensureNotificationLogSchema_();
+  const values=sh.getDataRange().getValues();
+
+  if(values.length<=1) {
+    return {
+      ok:true,
+      rows:0,
+      foodNamesFilled:0,
+      familyNamesFilled:0
+    };
+  }
+
+  const headers=values[0].map(String);
+  const familyIdI=headers.indexOf('familyId');
+  const foodIdI=headers.indexOf('foodId');
+  const foodNameI=headers.indexOf('foodName');
+  const familyNameI=headers.indexOf('familyName');
+
+  if(
+    familyIdI<0 ||
+    foodIdI<0 ||
+    foodNameI<0 ||
+    familyNameI<0
+  ) {
+    throw new Error('NotificationLog 欄位不完整');
+  }
+
+  const maps=adminUserMaps_();
+  let foodNamesFilled=0;
+  let familyNamesFilled=0;
+
+  const foodNameValues=[];
+  const familyNameValues=[];
+
+  for(let r=1;r<values.length;r++) {
+    const row=values[r];
+
+    let foodName=String(row[foodNameI]||'').trim();
+    let familyName=String(row[familyNameI]||'').trim();
+
+    if(!foodName) {
+      const recovered=String(
+        maps.foodMap[String(row[foodIdI]||'')] || ''
+      ).trim();
+
+      if(recovered) {
+        foodName=recovered;
+        foodNamesFilled++;
+      }
+    }
+
+    if(!familyName) {
+      const recovered=String(
+        maps.familyMap[String(row[familyIdI]||'')] || ''
+      ).trim();
+
+      if(recovered) {
+        familyName=recovered;
+        familyNamesFilled++;
+      }
+    }
+
+    foodNameValues.push([foodName]);
+    familyNameValues.push([familyName]);
+  }
+
+  sh.getRange(
+    2,
+    foodNameI+1,
+    foodNameValues.length,
+    1
+  ).setValues(foodNameValues);
+
+  sh.getRange(
+    2,
+    familyNameI+1,
+    familyNameValues.length,
+    1
+  ).setValues(familyNameValues);
+
+  const result={
+    ok:true,
+    rows:values.length-1,
+    foodNamesFilled,
+    familyNamesFilled
+  };
+
+  Logger.log(JSON.stringify(result));
+  return result;
 }
 
 function upsertNotificationUser_(userId,emailEnabled,sendHour) {
@@ -950,12 +1635,27 @@ function deleteFamily_(user,p) {
 
   if(String(p.confirm||'')!=='DELETE') throw new Error('確認文字不正確');
 
+  const family=rows_(SHEETS.FAMILIES).find(x=>
+    String(x.familyId)===familyId
+  );
+  const familyName=family ? String(family.familyName||'') : '';
+
   markFamilyImagesPendingDelete_(familyId);
 
   deleteRowsByValue_(SHEETS.FOODS,'familyId',familyId);
   deleteRowsByValue_(SHEETS.MEMBERS,'familyId',familyId);
-  deleteRowsByValue_(SHEETS.ACTIVITY,'familyId',familyId);
+
+  // ActivityLog 是 90 天稽核紀錄，不跟著群組立即刪除。
+  // 群組本體刪除後仍保留原有操作紀錄，並新增一筆刪除群組紀錄。
   deleteRowsByValue_(SHEETS.FAMILIES,'familyId',familyId);
+
+  logActivity_(
+    familyId,
+    user.userId,
+    'family_delete',
+    familyId,
+    familyName
+  );
 
   return { ok:true };
 }
@@ -966,6 +1666,8 @@ function listFoods_(user,p) {
   const familyId=String(p.familyId||'');
   const membership=requireMembership_(user.userId,familyId);
 
+  // 前端需要同時顯示「目前食品」與「已用完」歷史，
+  // 所以這裡回傳群組內全部食品；前端再依 status 分頁顯示。
   const foods=rows_(SHEETS.FOODS)
     .filter(x=>x.familyId===familyId)
     .map(foodForClient_);
@@ -1002,9 +1704,93 @@ function syncChanges_(user,p) {
     const idx={};
     headers.forEach((h,i)=>idx[h]=i);
 
-    if(idx.imageId==null) {
-      throw new Error('Foods 尚未建立 imageId 欄位，請先執行 setupDatabase()');
+    if(idx.imageId==null || idx.status==null || idx.consumedAt==null) {
+      throw new Error('Foods 欄位尚未更新，請先執行 setupDatabase()');
     }
+
+    // 每一筆 clientKey 都會寫入 RequestLog。
+    // 同一個 change 即使因網路逾時被前端重送，也只會作用在同一筆食品上。
+    const reqSh=sheet_(SHEETS.REQUESTS);
+    let reqValues=reqSh.getDataRange().getValues();
+    const reqHeaders=reqValues[0].map(String);
+    const reqIdx={};
+    reqHeaders.forEach((h,i)=>reqIdx[h]=i);
+
+    const requiredRequestHeaders=[
+      'requestId','userId','action','status','resultJson','createdAt','updatedAt'
+    ];
+    if(requiredRequestHeaders.some(h=>reqIdx[h]==null)) {
+      throw new Error('RequestLog 欄位不完整，請先執行 setupDatabase()');
+    }
+
+    const requestMap=new Map();
+    const requestMapKey_=(requestId,action)=>requestId+'\u0001'+action;
+
+    for(let r=1;r<reqValues.length;r++) {
+      if(String(reqValues[r][reqIdx.userId])!==user.userId) continue;
+      requestMap.set(
+        requestMapKey_(
+          String(reqValues[r][reqIdx.requestId]),
+          String(reqValues[r][reqIdx.action])
+        ),
+        r
+      );
+    }
+
+    const getRequest_=(requestId,action)=>{
+      const rowIndex=requestMap.get(requestMapKey_(requestId,action));
+      if(rowIndex==null) return null;
+
+      return {
+        rowIndex,
+        status:String(reqValues[rowIndex][reqIdx.status]||''),
+        result:parseRequestResult_(reqValues[rowIndex][reqIdx.resultJson])
+      };
+    };
+
+    const saveRequest_=(requestId,action,status,result)=>{
+      const now=isoNow_();
+      const key=requestMapKey_(requestId,action);
+      let rowIndex=requestMap.get(key);
+
+      if(rowIndex==null) {
+        const row=[
+          requestId,
+          user.userId,
+          action,
+          status,
+          JSON.stringify(result),
+          now,
+          now
+        ];
+
+        reqSh.appendRow(row);
+        reqValues.push(row);
+        rowIndex=reqValues.length-1;
+        requestMap.set(key,rowIndex);
+      } else {
+        reqSh.getRange(rowIndex+1,reqIdx.status+1).setValue(status);
+        reqSh.getRange(rowIndex+1,reqIdx.resultJson+1)
+          .setValue(JSON.stringify(result));
+        reqSh.getRange(rowIndex+1,reqIdx.updatedAt+1).setValue(now);
+
+        reqValues[rowIndex][reqIdx.status]=status;
+        reqValues[rowIndex][reqIdx.resultJson]=JSON.stringify(result);
+        reqValues[rowIndex][reqIdx.updatedAt]=now;
+      }
+
+      return {
+        rowIndex,
+        status,
+        result
+      };
+    };
+
+    const requestIdFor_=(clientKey)=>
+      'food-sync:'+familyId+':'+clientKey;
+
+    const requestActionFor_=(type)=>
+      'syncFood:'+type;
 
     const applied=[];
     const items=[];
@@ -1013,117 +1799,410 @@ function syncChanges_(user,p) {
 
     for(const ch of changes) {
       const type=String(ch.type||'');
-      const clientKey=String(ch.clientKey||Utilities.getUuid());
+      const clientKey=String(ch.clientKey||'').trim();
+
+      // 新版前端一定會帶 clientKey；舊版若沒帶，仍允許執行但無法提供跨重試去重。
+      const effectiveClientKey=clientKey || Utilities.getUuid();
+      const requestId=requestIdFor_(effectiveClientKey);
+      const requestAction=requestActionFor_(type);
 
       if(type==='add') {
         const f=validateFoodPayload_(ch.food||{});
-        validateImageReferenceForChange_(
-          user,
-          familyId,
-          f.imageId,
-          ''
-        );
+        const incomingTempId=String(ch.tempId||'');
 
-        const id=Utilities.getUuid();
-        const now=isoNow_();
+        let req=getRequest_(requestId,requestAction);
+        let state=req && req.result ? req.result : null;
 
-        sh.appendRow([
-          familyId,id,f.name,f.qty,f.location,f.expiry,f.note,
-          user.userId,now.slice(0,10),now,
-          f.notifyMode,f.notifyDaysBefore,f.imageId
-        ]);
+        if(state && state.familyId && state.familyId!==familyId) {
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id:'',
+            reason:'request_family_mismatch'
+          });
+          continue;
+        }
 
-        if(f.imageId) {
-          attachImageToFood_(
-            f.imageId,
+        if(!state || !state.food || !state.food.id) {
+          const id=Utilities.getUuid();
+          const now=isoNow_();
+
+          state={
             familyId,
-            id,
-            user.userId
+            tempId:incomingTempId,
+            expectedUpdatedAt:'',
+            oldImageId:'',
+            food:savedFoodFromPayload_(
+              id,
+              f,
+              now.slice(0,10),
+              now
+            )
+          };
+
+          req=saveRequest_(
+            requestId,
+            requestAction,
+            'processing',
+            state
           );
         }
 
-        const saved={
-          id,
-          name:f.name,
-          qty:f.qty,
-          location:f.location,
-          expiry:f.expiry,
-          note:f.note,
-          createAt:now.slice(0,10),
-          updatedAt:now,
-          notifyMode:f.notifyMode,
-          notifyDaysBefore:f.notifyDaysBefore,
-          imageId:f.imageId
-        };
+        const id=String(state.food.id||'');
+        let rowIndex=findFoodRow_(values,idx,familyId,id);
 
-        applied.push({clientKey});
-        items.push({
-          tempId:String(ch.tempId||''),
-          food:saved
-        });
+        if(rowIndex<1) {
+          // 已標記 done 卻找不到原本新增的食品，代表之後可能已被其他裝置刪除。
+          // 不可在 retry 時把它重新建立回來。
+          if(req && req.status==='done') {
+            conflicts.push({
+              clientKey:effectiveClientKey,
+              id,
+              reason:'not_found'
+            });
+            continue;
+          }
 
-        logActivity_(
-          familyId,
-          user.userId,
-          'food_add',
-          id,
-          f.name
+          validateImageReferenceForChange_(
+            user,
+            familyId,
+            f.imageId,
+            ''
+          );
+
+          // processing 期間若使用者又編輯了 tmp 食品，保留同一個正式 id，
+          // 但把尚未真正落盤的內容更新為最新版本。
+          state.tempId=state.tempId || incomingTempId;
+          state.food=savedFoodFromPayload_(
+            id,
+            f,
+            state.food.createAt || isoNow_().slice(0,10),
+            state.food.updatedAt || isoNow_()
+          );
+          state.oldImageId='';
+
+          saveRequest_(
+            requestId,
+            requestAction,
+            'processing',
+            state
+          );
+
+          const saved=state.food;
+
+          sh.appendRow([
+            familyId,id,saved.name,saved.qty,saved.location,saved.expiry,saved.note,
+            user.userId,saved.createAt,saved.updatedAt,
+            saved.notifyMode,saved.notifyDaysBefore,saved.imageId,
+            saved.status,saved.consumedAt
+          ]);
+
+          values.push([
+            familyId,id,saved.name,saved.qty,saved.location,saved.expiry,saved.note,
+            user.userId,saved.createAt,saved.updatedAt,
+            saved.notifyMode,saved.notifyDaysBefore,saved.imageId,
+            saved.status,saved.consumedAt
+          ]);
+          rowIndex=values.length-1;
+
+          if(saved.imageId) {
+            attachImageToFood_(
+              saved.imageId,
+              familyId,
+              id,
+              user.userId
+            );
+          }
+
+          logActivity_(
+            familyId,
+            user.userId,
+            'food_add',
+            id,
+            saved.name
+          );
+        } else {
+          let current=foodFromValuesRow_(values,rowIndex,idx);
+
+          // 如果前一次其實已成功，只是前端沒有收到回應，直接重播結果。
+          // 若使用者在這段期間又修改了 tmp 食品，且伺服器那筆尚未被別人改過，
+          // 則把「同一個尚未確認完成的新增」更新成最新內容，而不是再 append 一列。
+          if(!foodPayloadMatches_(current,f)) {
+            const lastKnown=String(state.food.updatedAt||'');
+
+            if(
+              current.updatedAt &&
+              lastKnown &&
+              current.updatedAt!==lastKnown
+            ) {
+              conflicts.push({
+                clientKey:effectiveClientKey,
+                id,
+                reason:'modified_elsewhere'
+              });
+              continue;
+            }
+
+            validateImageReferenceForChange_(
+              user,
+              familyId,
+              f.imageId,
+              id
+            );
+
+            const oldImageId=current.imageId||'';
+            const now=isoNow_();
+            const saved=savedFoodFromPayload_(
+              id,
+              f,
+              current.createAt,
+              now
+            );
+
+            state.expectedUpdatedAt=current.updatedAt||'';
+            state.oldImageId=oldImageId;
+            state.food=saved;
+
+            saveRequest_(
+              requestId,
+              requestAction,
+              'processing',
+              state
+            );
+
+            writeFoodRow_(
+              sh,
+              values,
+              rowIndex,
+              idx,
+              f,
+              now
+            );
+
+            if(f.imageId!==oldImageId) {
+              if(f.imageId) {
+                attachImageToFood_(
+                  f.imageId,
+                  familyId,
+                  id,
+                  user.userId
+                );
+              }
+
+              if(oldImageId) {
+                markImagePendingDelete_(
+                  oldImageId,
+                  'food_image_replaced'
+                );
+              }
+            }
+
+            current=saved;
+
+            logActivity_(
+              familyId,
+              user.userId,
+              'food_update',
+              id,
+              f.name
+            );
+          } else {
+            // RequestLog 可能仍停在 processing，但食品列已經寫入。
+            // 補做可安全重入的圖片綁定後即可完成這筆 request。
+            if(current.imageId) {
+              attachImageToFood_(
+                current.imageId,
+                familyId,
+                id,
+                user.userId
+              );
+            }
+          }
+
+          state.food=current;
+        }
+
+        state.tempId=state.tempId || incomingTempId;
+        state.oldImageId='';
+        saveRequest_(
+          requestId,
+          requestAction,
+          'done',
+          state
         );
 
-        values.push([
-          familyId,id,f.name,f.qty,f.location,f.expiry,f.note,
-          user.userId,now.slice(0,10),now,
-          f.notifyMode,f.notifyDaysBefore,f.imageId
-        ]);
+        applied.push({clientKey:effectiveClientKey});
+        items.push({
+          clientKey:effectiveClientKey,
+          tempId:incomingTempId || state.tempId || '',
+          food:state.food
+        });
 
         continue;
       }
 
       const id=String(ch.id||'');
-      const rowIndex=findFoodRow_(
-        values,
-        idx,
-        familyId,
-        id
-      );
-
-      if(rowIndex<1) {
-        conflicts.push({
-          clientKey,
-          id,
-          reason:'not_found'
-        });
-        continue;
-      }
-
-      const currentUpdatedAt=normalizeCell_(
-        values[rowIndex][idx.updatedAt],
-        'updatedAt'
-      );
-
-      const expected=String(
-        ch.expectedUpdatedAt||''
-      );
-
-      if(
-        expected &&
-        currentUpdatedAt &&
-        expected!==currentUpdatedAt
-      ) {
-        conflicts.push({
-          clientKey,
-          id,
-          reason:'modified_elsewhere'
-        });
-        continue;
-      }
-
-      const oldImageId=String(
-        values[rowIndex][idx.imageId]||''
-      );
 
       if(type==='update') {
         const f=validateFoodPayload_(ch.food||{});
+        let req=getRequest_(requestId,requestAction);
+        let state=req && req.result ? req.result : null;
+        let rowIndex=findFoodRow_(values,idx,familyId,id);
+
+        if(rowIndex<1) {
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id,
+            reason:'not_found'
+          });
+          continue;
+        }
+
+        let current=foodFromValuesRow_(values,rowIndex,idx);
+
+        if(state && state.familyId && state.familyId!==familyId) {
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id,
+            reason:'request_family_mismatch'
+          });
+          continue;
+        }
+
+        if(state && state.food && state.food.id===id) {
+          const lastApplied=String(state.food.updatedAt||'');
+
+          if(current.updatedAt===lastApplied) {
+            if(!foodPayloadMatches_(current,f)) {
+              validateImageReferenceForChange_(
+                user,
+                familyId,
+                f.imageId,
+                id
+              );
+
+              const oldImageId=current.imageId||'';
+              const now=isoNow_();
+              const saved=savedFoodFromPayload_(
+                id,
+                f,
+                current.createAt,
+                now
+              );
+
+              state.expectedUpdatedAt=current.updatedAt||'';
+              state.oldImageId=oldImageId;
+              state.food=saved;
+
+              saveRequest_(
+                requestId,
+                requestAction,
+                'processing',
+                state
+              );
+
+              writeFoodRow_(
+                sh,
+                values,
+                rowIndex,
+                idx,
+                f,
+                now
+              );
+
+              if(f.imageId!==oldImageId) {
+                if(f.imageId) {
+                  attachImageToFood_(
+                    f.imageId,
+                    familyId,
+                    id,
+                    user.userId
+                  );
+                }
+
+                if(oldImageId) {
+                  markImagePendingDelete_(
+                    oldImageId,
+                    'food_image_replaced'
+                  );
+                }
+              }
+
+              current=saved;
+
+              logActivity_(
+                familyId,
+                user.userId,
+                'food_update',
+                id,
+                f.name
+              );
+            } else {
+              // 同一個 update 的安全重播。
+              if(current.imageId) {
+                attachImageToFood_(
+                  current.imageId,
+                  familyId,
+                  id,
+                  user.userId
+                );
+              }
+
+              if(
+                state.oldImageId &&
+                state.oldImageId!==current.imageId
+              ) {
+                markImagePendingDelete_(
+                  state.oldImageId,
+                  'food_image_replaced'
+                );
+              }
+            }
+
+            state.food=current;
+            state.oldImageId='';
+            saveRequest_(
+              requestId,
+              requestAction,
+              'done',
+              state
+            );
+
+            applied.push({clientKey:effectiveClientKey});
+            items.push({clientKey:effectiveClientKey,food:current});
+            continue;
+          }
+
+          // processing 還沒真正寫入 Foods 時，current 仍會是 expectedUpdatedAt。
+          if(
+            req &&
+            req.status==='processing' &&
+            String(state.expectedUpdatedAt||'')===current.updatedAt
+          ) {
+            // 繼續走到下方，用目前前端最新 payload 完成同一筆 update。
+          } else {
+            conflicts.push({
+              clientKey:effectiveClientKey,
+              id,
+              reason:'modified_elsewhere'
+            });
+            continue;
+          }
+        } else {
+          const expected=String(ch.expectedUpdatedAt||'');
+
+          if(
+            expected &&
+            current.updatedAt &&
+            expected!==current.updatedAt
+          ) {
+            conflicts.push({
+              clientKey:effectiveClientKey,
+              id,
+              reason:'modified_elsewhere'
+            });
+            continue;
+          }
+        }
 
         validateImageReferenceForChange_(
           user,
@@ -1132,26 +2211,38 @@ function syncChanges_(user,p) {
           id
         );
 
+        const oldImageId=current.imageId||'';
         const now=isoNow_();
+        const saved=savedFoodFromPayload_(
+          id,
+          f,
+          current.createAt,
+          now
+        );
 
-        sh.getRange(rowIndex+1,idx.name+1)
-          .setValue(f.name);
-        sh.getRange(rowIndex+1,idx.qty+1)
-          .setValue(f.qty);
-        sh.getRange(rowIndex+1,idx.location+1)
-          .setValue(f.location);
-        sh.getRange(rowIndex+1,idx.expiry+1)
-          .setValue(f.expiry);
-        sh.getRange(rowIndex+1,idx.note+1)
-          .setValue(f.note);
-        sh.getRange(rowIndex+1,idx.notifyMode+1)
-          .setValue(f.notifyMode);
-        sh.getRange(rowIndex+1,idx.notifyDaysBefore+1)
-          .setValue(f.notifyDaysBefore);
-        sh.getRange(rowIndex+1,idx.imageId+1)
-          .setValue(f.imageId);
-        sh.getRange(rowIndex+1,idx.updatedAt+1)
-          .setValue(now);
+        state={
+          familyId,
+          id,
+          expectedUpdatedAt:current.updatedAt||'',
+          oldImageId,
+          food:saved
+        };
+
+        saveRequest_(
+          requestId,
+          requestAction,
+          'processing',
+          state
+        );
+
+        writeFoodRow_(
+          sh,
+          values,
+          rowIndex,
+          idx,
+          f,
+          now
+        );
 
         if(f.imageId!==oldImageId) {
           if(f.imageId) {
@@ -1171,36 +2262,16 @@ function syncChanges_(user,p) {
           }
         }
 
-        values[rowIndex][idx.name]=f.name;
-        values[rowIndex][idx.qty]=f.qty;
-        values[rowIndex][idx.location]=f.location;
-        values[rowIndex][idx.expiry]=f.expiry;
-        values[rowIndex][idx.note]=f.note;
-        values[rowIndex][idx.notifyMode]=f.notifyMode;
-        values[rowIndex][idx.notifyDaysBefore]=f.notifyDaysBefore;
-        values[rowIndex][idx.imageId]=f.imageId;
-        values[rowIndex][idx.updatedAt]=now;
+        state.oldImageId='';
+        saveRequest_(
+          requestId,
+          requestAction,
+          'done',
+          state
+        );
 
-        applied.push({clientKey});
-
-        items.push({
-          food:{
-            id,
-            name:f.name,
-            qty:f.qty,
-            location:f.location,
-            expiry:f.expiry,
-            note:f.note,
-            createAt:normalizeCell_(
-              values[rowIndex][idx.createAt],
-              'createAt'
-            ),
-            updatedAt:now,
-            notifyMode:f.notifyMode,
-            notifyDaysBefore:f.notifyDaysBefore,
-            imageId:f.imageId
-          }
-        });
+        applied.push({clientKey:effectiveClientKey});
+        items.push({clientKey:effectiveClientKey,food:saved});
 
         logActivity_(
           familyId,
@@ -1214,9 +2285,90 @@ function syncChanges_(user,p) {
       }
 
       if(type==='delete') {
-        if(oldImageId) {
+        let req=getRequest_(requestId,requestAction);
+        let state=req && req.result ? req.result : null;
+        let rowIndex=findFoodRow_(values,idx,familyId,id);
+
+        if(state && state.familyId && state.familyId!==familyId) {
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id,
+            reason:'request_family_mismatch'
+          });
+          continue;
+        }
+
+        if(req && req.status==='done') {
+          // delete 成功後重送：即使 Foods 已找不到，也視為同一操作的成功重播。
+          applied.push({clientKey:effectiveClientKey});
+          deletedIds.push(id);
+          continue;
+        }
+
+        if(rowIndex<1) {
+          if(req && req.status==='processing' && state) {
+            if(state.oldImageId) {
+              markImagePendingDelete_(
+                state.oldImageId,
+                'food_deleted'
+              );
+            }
+
+            saveRequest_(
+              requestId,
+              requestAction,
+              'done',
+              state
+            );
+
+            applied.push({clientKey:effectiveClientKey});
+            deletedIds.push(id);
+            continue;
+          }
+
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id,
+            reason:'not_found'
+          });
+          continue;
+        }
+
+        const current=foodFromValuesRow_(values,rowIndex,idx);
+        const expected=state
+          ? String(state.expectedUpdatedAt||'')
+          : String(ch.expectedUpdatedAt||'');
+
+        if(
+          expected &&
+          current.updatedAt &&
+          expected!==current.updatedAt
+        ) {
+          conflicts.push({
+            clientKey:effectiveClientKey,
+            id,
+            reason:'modified_elsewhere'
+          });
+          continue;
+        }
+
+        state={
+          familyId,
+          id,
+          expectedUpdatedAt:current.updatedAt||'',
+          oldImageId:current.imageId||''
+        };
+
+        saveRequest_(
+          requestId,
+          requestAction,
+          'processing',
+          state
+        );
+
+        if(state.oldImageId) {
           markImagePendingDelete_(
-            oldImageId,
+            state.oldImageId,
             'food_deleted'
           );
         }
@@ -1224,7 +2376,14 @@ function syncChanges_(user,p) {
         sh.deleteRow(rowIndex+1);
         values.splice(rowIndex,1);
 
-        applied.push({clientKey});
+        saveRequest_(
+          requestId,
+          requestAction,
+          'done',
+          state
+        );
+
+        applied.push({clientKey:effectiveClientKey});
         deletedIds.push(id);
 
         logActivity_(
@@ -1232,14 +2391,14 @@ function syncChanges_(user,p) {
           user.userId,
           'food_delete',
           id,
-          ''
+          current.name
         );
 
         continue;
       }
 
       conflicts.push({
-        clientKey,
+        clientKey:effectiveClientKey,
         id,
         reason:'unknown_type'
       });
@@ -1257,13 +2416,27 @@ function syncChanges_(user,p) {
   }
 }
 
+function normalizeFoodStatus_(value) {
+  return String(value||'').toLowerCase()==='consumed'
+    ? 'consumed'
+    : 'active';
+}
+
 function validateFoodPayload_(f) {
   const name=String(f.name||'').trim();
   const expiry=String(f.expiry||'').trim();
-  const qty=Math.max(1,Number(f.qty||1));
+  const status=normalizeFoodStatus_(f.status);
+  const rawQty=Number(f.qty);
+  const qty=status==='consumed'
+    ? Math.max(0,Number.isFinite(rawQty) ? rawQty : 0)
+    : Math.max(1,Number.isFinite(rawQty) ? rawQty : 1);
+  const consumedAt=status==='consumed'
+    ? String(f.consumedAt||'').trim()
+    : '';
 
   if(!name) throw new Error('食品名稱不可空白');
   if(!/^\d{4}-\d{2}-\d{2}$/.test(expiry)) throw new Error('到期日格式不正確');
+  if(status==='consumed' && !consumedAt) throw new Error('已用完食品缺少 consumedAt');
 
   return {
     name,
@@ -1273,7 +2446,9 @@ function validateFoodPayload_(f) {
     note:String(f.note||''),
     notifyMode:['inherit','custom','off'].includes(String(f.notifyMode||'inherit')) ? String(f.notifyMode||'inherit') : 'inherit',
     notifyDaysBefore:String(f.notifyMode||'inherit')==='custom' ? Math.max(0,Math.min(365,Number(f.notifyDaysBefore||0))) : '',
-    imageId:String(f.imageId||'').trim()
+    imageId:String(f.imageId||'').trim(),
+    status,
+    consumedAt
   };
 }
 
@@ -1283,6 +2458,86 @@ function findFoodRow_(values,idx,familyId,id) {
        String(values[r][idx.id])===id) return r;
   }
   return -1;
+}
+
+function foodFromValuesRow_(values,rowIndex,idx) {
+  return {
+    id:String(values[rowIndex][idx.id]||''),
+    name:String(values[rowIndex][idx.name]||''),
+    qty:Number(values[rowIndex][idx.qty]||1),
+    location:String(values[rowIndex][idx.location]||''),
+    expiry:normalizeCell_(values[rowIndex][idx.expiry],'expiry'),
+    note:String(values[rowIndex][idx.note]||''),
+    createAt:normalizeCell_(values[rowIndex][idx.createAt],'createAt'),
+    updatedAt:normalizeCell_(values[rowIndex][idx.updatedAt],'updatedAt'),
+    notifyMode:String(values[rowIndex][idx.notifyMode]||'inherit'),
+    notifyDaysBefore:String(values[rowIndex][idx.notifyMode]||'inherit')==='custom'
+      ? Number(values[rowIndex][idx.notifyDaysBefore]||0)
+      : '',
+    imageId:String(values[rowIndex][idx.imageId]||''),
+    status:normalizeFoodStatus_(values[rowIndex][idx.status]),
+    consumedAt:String(values[rowIndex][idx.consumedAt]||'')
+  };
+}
+
+function savedFoodFromPayload_(id,f,createAt,updatedAt) {
+  return {
+    id:String(id||''),
+    name:f.name,
+    qty:f.qty,
+    location:f.location,
+    expiry:f.expiry,
+    note:f.note,
+    createAt:String(createAt||''),
+    updatedAt:String(updatedAt||''),
+    notifyMode:f.notifyMode,
+    notifyDaysBefore:f.notifyDaysBefore,
+    imageId:f.imageId,
+    status:f.status,
+    consumedAt:f.consumedAt
+  };
+}
+
+function foodPayloadMatches_(food,f) {
+  return (
+    String(food.name||'')===String(f.name||'') &&
+    Number(food.qty||1)===Number(f.qty||1) &&
+    String(food.location||'')===String(f.location||'') &&
+    String(food.expiry||'')===String(f.expiry||'') &&
+    String(food.note||'')===String(f.note||'') &&
+    String(food.notifyMode||'inherit')===String(f.notifyMode||'inherit') &&
+    String(food.notifyDaysBefore??'')===String(f.notifyDaysBefore??'') &&
+    String(food.imageId||'')===String(f.imageId||'') &&
+    normalizeFoodStatus_(food.status)===normalizeFoodStatus_(f.status) &&
+    String(food.consumedAt||'')===String(f.consumedAt||'')
+  );
+}
+
+function writeFoodRow_(sh,values,rowIndex,idx,f,updatedAt) {
+  sh.getRange(rowIndex+1,idx.name+1).setValue(f.name);
+  sh.getRange(rowIndex+1,idx.qty+1).setValue(f.qty);
+  sh.getRange(rowIndex+1,idx.location+1).setValue(f.location);
+  sh.getRange(rowIndex+1,idx.expiry+1).setValue(f.expiry);
+  sh.getRange(rowIndex+1,idx.note+1).setValue(f.note);
+  sh.getRange(rowIndex+1,idx.notifyMode+1).setValue(f.notifyMode);
+  sh.getRange(rowIndex+1,idx.notifyDaysBefore+1)
+    .setValue(f.notifyDaysBefore);
+  sh.getRange(rowIndex+1,idx.imageId+1).setValue(f.imageId);
+  sh.getRange(rowIndex+1,idx.status+1).setValue(f.status);
+  sh.getRange(rowIndex+1,idx.consumedAt+1).setValue(f.consumedAt);
+  sh.getRange(rowIndex+1,idx.updatedAt+1).setValue(updatedAt);
+
+  values[rowIndex][idx.name]=f.name;
+  values[rowIndex][idx.qty]=f.qty;
+  values[rowIndex][idx.location]=f.location;
+  values[rowIndex][idx.expiry]=f.expiry;
+  values[rowIndex][idx.note]=f.note;
+  values[rowIndex][idx.notifyMode]=f.notifyMode;
+  values[rowIndex][idx.notifyDaysBefore]=f.notifyDaysBefore;
+  values[rowIndex][idx.imageId]=f.imageId;
+  values[rowIndex][idx.status]=f.status;
+  values[rowIndex][idx.consumedAt]=f.consumedAt;
+  values[rowIndex][idx.updatedAt]=updatedAt;
 }
 
 function foodForClient_(x) {
@@ -1297,7 +2552,9 @@ function foodForClient_(x) {
     updatedAt:String(x.updatedAt||''),
     notifyMode:String(x.notifyMode||'inherit'),
     notifyDaysBefore:String(x.notifyMode||'inherit')==='custom' ? Number(x.notifyDaysBefore||0) : '',
-    imageId:String(x.imageId||'')
+    imageId:String(x.imageId||''),
+    status:normalizeFoodStatus_(x.status),
+    consumedAt:String(x.consumedAt||'')
   };
 }
 
@@ -1309,12 +2566,18 @@ function setupStorageAndMaintenance() {
 
   const folders=getOrCreateStorageFolders_();
 
-  // 避免重複建立同一個每週 Trigger。
+  // 避免重複建立同一個每週 Trigger，並清除舊的續跑狀態。
   ScriptApp.getProjectTriggers()
     .filter(t =>
-      t.getHandlerFunction()==='weeklyBackupAndMaintenance'
+      [
+        'weeklyBackupAndMaintenance',
+        IMAGE_BACKUP_CONTINUATION_HANDLER
+      ].includes(t.getHandlerFunction())
     )
     .forEach(t => ScriptApp.deleteTrigger(t));
+
+  PropertiesService.getScriptProperties()
+    .deleteProperty(IMAGE_BACKUP_RUN_STATE_KEY);
 
   ScriptApp.newTrigger('weeklyBackupAndMaintenance')
     .timeBased()
@@ -1326,8 +2589,9 @@ function setupStorageAndMaintenance() {
     ok:true,
     rootFolderId:folders.root.getId(),
     imageFolderId:folders.images.getId(),
+    imageBackupFolderId:folders.imageBackups.getId(),
     backupFolderId:folders.backups.getId(),
-    message:'已建立 Drive 儲存資料夾與每週備份 / 清理 Trigger'
+    message:'已建立 Drive 儲存資料夾、增量圖片備份與每週備份 / 清理 Trigger'
   };
 
   Logger.log(JSON.stringify(result));
@@ -1335,22 +2599,200 @@ function setupStorageAndMaintenance() {
 }
 
 function weeklyBackupAndMaintenance() {
-  // 順序刻意是「先備份，再清理」。
-  const backup=createDatabaseBackup_();
-  const cleanup=cleanupTransientData_();
-  const imageCleanup=cleanupFoodImageMetadata_();
-  const oldBackups=cleanupOldBackups_();
+  return runWeeklyBackupAndMaintenance_();
+}
 
-  const result={
-    ok:true,
-    backup,
-    cleanup,
-    imageCleanup,
-    oldBackups
+// 由一次性 Trigger 呼叫。圖片尚未全部完成時會自動建立下一個續跑 Trigger。
+function continueWeeklyBackupAndMaintenance() {
+  return runWeeklyBackupAndMaintenance_();
+}
+
+function newImageBackupRunState_() {
+  return {
+    version:1,
+    runId:Utilities.getUuid(),
+    startedAt:isoNow_(),
+    phase:'images',
+    nextIndex:0,
+    processed:0,
+    created:0,
+    alreadyBackedUp:0,
+    errors:0,
+    totalCandidates:0,
+    skippedUnattachedPending:0,
+    failureRetries:0,
+    lastError:'',
+    imageBackup:null,
+    results:{}
   };
+}
 
-  Logger.log(JSON.stringify(result));
-  return result;
+function loadImageBackupRunState_() {
+  const raw=PropertiesService.getScriptProperties()
+    .getProperty(IMAGE_BACKUP_RUN_STATE_KEY);
+
+  if(!raw) return newImageBackupRunState_();
+
+  try {
+    const state=JSON.parse(raw);
+    if(
+      state &&
+      Number(state.version)===1 &&
+      ['images','maintenance'].includes(String(state.phase||''))
+    ) {
+      state.results=state.results||{};
+      return state;
+    }
+  } catch(err) {
+    console.warn('Invalid image backup state: '+String(err.message||err));
+  }
+
+  return newImageBackupRunState_();
+}
+
+function saveImageBackupRunState_(state) {
+  PropertiesService.getScriptProperties().setProperty(
+    IMAGE_BACKUP_RUN_STATE_KEY,
+    JSON.stringify(state)
+  );
+}
+
+function deleteImageBackupContinuationTriggers_() {
+  ScriptApp.getProjectTriggers()
+    .filter(t =>
+      t.getHandlerFunction()===IMAGE_BACKUP_CONTINUATION_HANDLER
+    )
+    .forEach(t => ScriptApp.deleteTrigger(t));
+}
+
+function scheduleImageBackupContinuation_() {
+  // 每次只保留一個一次性續跑 Trigger，避免手動執行與排程重疊時累積。
+  deleteImageBackupContinuationTriggers_();
+  ScriptApp.newTrigger(IMAGE_BACKUP_CONTINUATION_HANDLER)
+    .timeBased()
+    .after(IMAGE_BACKUP_CONTINUATION_DELAY_MS)
+    .create();
+}
+
+function runWeeklyBackupAndMaintenance_() {
+  const executionStartedAt=Date.now();
+  const lock=LockService.getScriptLock();
+
+  if(!lock.tryLock(5000)) {
+    scheduleImageBackupContinuation_();
+    const busy={
+      ok:true,
+      complete:false,
+      busy:true,
+      continuationScheduled:true,
+      message:'另一個備份程序仍在執行，已安排稍後續跑'
+    };
+    Logger.log(JSON.stringify(busy));
+    return busy;
+  }
+
+  // 若本次正是一次性 Trigger，先刪除已觸發的 Trigger；未完成時會再建一個。
+  deleteImageBackupContinuationTriggers_();
+  let state=loadImageBackupRunState_();
+
+  try {
+    if(state.phase==='images') {
+      const batch=backupFoodImagesBatch_(state,executionStartedAt);
+      state=batch.state;
+      saveImageBackupRunState_(state);
+
+      if(!batch.complete) {
+        scheduleImageBackupContinuation_();
+        const pending={
+          ok:state.errors===0,
+          complete:false,
+          runId:state.runId,
+          imageBackup:batch.summary,
+          continuationScheduled:true,
+          message:'圖片尚未全部完成，已保存進度並安排續跑'
+        };
+        Logger.log(JSON.stringify(pending));
+        return pending;
+      }
+
+      state.phase='maintenance';
+      state.imageBackup=batch.summary;
+      saveImageBackupRunState_(state);
+    }
+
+    // 每完成一個維護階段就保存結果。若服務暫時錯誤，下次續跑不會
+    // 重複建立已經成功的資料庫備份。
+    if(!state.results.backup) {
+      state.results.backup=createDatabaseBackup_();
+      saveImageBackupRunState_(state);
+    }
+
+    if(!state.results.cleanup) {
+      state.results.cleanup=cleanupTransientData_();
+      saveImageBackupRunState_(state);
+    }
+
+    if(!state.results.imageCleanup) {
+      state.results.imageCleanup=state.imageBackup.errors===0
+        ? cleanupFoodImageMetadata_()
+        : {
+            skipped:true,
+            reason:'圖片備份有錯誤，為避免刪除未備份圖片，本次略過圖片清理'
+          };
+      saveImageBackupRunState_(state);
+    }
+
+    if(!state.results.imageBackupCleanup) {
+      state.results.imageBackupCleanup=cleanupExpiredImageBackups_();
+      saveImageBackupRunState_(state);
+    }
+
+    if(!state.results.oldBackups) {
+      state.results.oldBackups=cleanupOldBackups_();
+      saveImageBackupRunState_(state);
+    }
+
+    const result={
+      ok:state.imageBackup.errors===0,
+      complete:true,
+      runId:state.runId,
+      imageBackup:state.imageBackup,
+      backup:state.results.backup,
+      cleanup:state.results.cleanup,
+      imageCleanup:state.results.imageCleanup,
+      imageBackupCleanup:state.results.imageBackupCleanup,
+      oldBackups:state.results.oldBackups
+    };
+
+    PropertiesService.getScriptProperties()
+      .deleteProperty(IMAGE_BACKUP_RUN_STATE_KEY);
+    deleteImageBackupContinuationTriggers_();
+    Logger.log(JSON.stringify(result));
+    return result;
+  } catch(err) {
+    // 服務偶發錯誤時保留目前進度並自動重試。即使這裡建立 Trigger
+    // 失敗，下一次每週排程仍會讀取相同狀態繼續。
+    state.failureRetries=Number(state.failureRetries||0)+1;
+    state.lastError=String(err.message||err);
+    state.lastFailedAt=isoNow_();
+    saveImageBackupRunState_(state);
+
+    // 避免權限或配額等永久性錯誤造成無限 Trigger 迴圈；下週排程
+    // 仍會保留狀態並再次嘗試，也可在修正問題後手動執行主程序。
+    if(state.failureRetries<=IMAGE_BACKUP_MAX_FAILURE_RETRIES) {
+      try {
+        scheduleImageBackupContinuation_();
+      } catch(triggerErr) {
+        console.error(
+          'Unable to schedule image backup continuation: '+
+          String(triggerErr.message||triggerErr)
+        );
+      }
+    }
+    throw err;
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function createDatabaseBackup_() {
@@ -1410,6 +2852,475 @@ function cleanupOldBackups_() {
     trashed,
     retentionDays:BACKUP_RETENTION_DAYS
   };
+}
+
+function imageBackupExtension_(mimeType) {
+  const mime=String(mimeType||'').toLowerCase();
+  if(mime==='image/webp') return 'webp';
+  if(mime==='image/png') return 'png';
+  return 'jpg';
+}
+
+function getAvailableDriveFile_(fileId) {
+  const id=String(fileId||'');
+  if(!id) return null;
+
+  try {
+    const file=DriveApp.getFileById(id);
+    return file.isTrashed() ? null : file;
+  } catch {
+    return null;
+  }
+}
+
+function createImageBackupContext_() {
+  const ss=SpreadsheetApp.getActiveSpreadsheet();
+
+  ensureSheet_(
+    ss,
+    SHEETS.IMAGE_BACKUPS,
+    IMAGE_BACKUP_LOG_HEADERS
+  );
+
+  const sh=ss.getSheetByName(SHEETS.IMAGE_BACKUPS);
+  ensureHeaders_(sh,IMAGE_BACKUP_LOG_HEADERS);
+
+  const values=sh.getDataRange().getValues();
+  const headers=values[0].map(String);
+  const idx={};
+  headers.forEach((h,i)=>idx[h]=i);
+
+  const entries={};
+  for(let r=1;r<values.length;r++) {
+    const imageId=String(values[r][idx.imageId]||'');
+    if(!imageId) continue;
+
+    entries[imageId]={
+      rowNumber:r+1,
+      values:values[r].slice()
+    };
+  }
+
+  return {
+    sh,
+    headers,
+    idx,
+    entries,
+    folders:getOrCreateStorageFolders_()
+  };
+}
+
+function writeImageBackupLog_(ctx,meta,details) {
+  const imageId=String(meta.imageId||'');
+  if(!imageId) throw new Error('圖片備份缺少 imageId');
+
+  const existing=ctx.entries[imageId]||null;
+  const row=existing
+    ? existing.values.slice()
+    : new Array(ctx.headers.length).fill('');
+
+  const set=(name,value)=>{
+    const i=ctx.idx[name];
+    if(i!=null && i>=0) row[i]=value;
+  };
+
+  set('imageId',imageId);
+  set('familyId',String(meta.familyId||''));
+  set('foodId',String(meta.foodId||''));
+  set('sourceDriveFileId',String(meta.driveFileId||''));
+  set('backupFileId',String(details.backupFileId||''));
+  set('mimeType',String(meta.mimeType||''));
+  set('sizeBytes',Math.max(0,Number(meta.sizeBytes||0)));
+  set('sourceStatus',String(meta.status||''));
+  set('backedUpAt',String(details.backedUpAt||''));
+  set('updatedAt',isoNow_());
+  set(
+    'deletedAt',
+    String(meta.status||'')==='pending_delete'
+      ? String(meta.deletedAt||details.deletedAt||'')
+      : ''
+  );
+  set('lastError',String(details.lastError||''));
+
+  if(existing) {
+    ctx.sh.getRange(
+      existing.rowNumber,
+      1,
+      1,
+      row.length
+    ).setValues([row]);
+
+    existing.values=row;
+  } else {
+    ctx.sh.appendRow(row);
+    ctx.entries[imageId]={
+      rowNumber:ctx.sh.getLastRow(),
+      values:row
+    };
+  }
+}
+
+function imageBackupLogIsCurrent_(ctx,existing,meta,details) {
+  if(!existing) return false;
+
+  const value=name=>String(existing.values[ctx.idx[name]]||'');
+  const expectedDeletedAt=String(meta.status||'')==='pending_delete'
+    ? String(meta.deletedAt||details.deletedAt||'')
+    : '';
+
+  return (
+    value('imageId')===String(meta.imageId||'') &&
+    value('familyId')===String(meta.familyId||'') &&
+    value('foodId')===String(meta.foodId||'') &&
+    value('sourceDriveFileId')===String(meta.driveFileId||'') &&
+    value('backupFileId')===String(details.backupFileId||'') &&
+    value('mimeType')===String(meta.mimeType||'') &&
+    Number(value('sizeBytes')||0)===Math.max(0,Number(meta.sizeBytes||0)) &&
+    value('sourceStatus')===String(meta.status||'') &&
+    Boolean(value('backedUpAt')) &&
+    value('deletedAt')===expectedDeletedAt &&
+    !value('lastError')
+  );
+}
+
+function ensureFoodImageBackup_(meta,context) {
+  const ctx=context||createImageBackupContext_();
+  const imageId=String(meta.imageId||'');
+  const sourceFileId=String(meta.driveFileId||'');
+
+  if(!imageId || !sourceFileId) {
+    throw new Error('圖片備份資料不完整');
+  }
+
+  const existing=ctx.entries[imageId]||null;
+  const existingBackupId=existing
+    ? String(existing.values[ctx.idx.backupFileId]||'')
+    : '';
+  const existingBackedUpAt=existing
+    ? String(existing.values[ctx.idx.backedUpAt]||'')
+    : '';
+
+  let backupFile=getAvailableDriveFile_(existingBackupId);
+  let created=false;
+
+  try {
+    if(!backupFile) {
+      // 原圖即使已在垃圾桶，只要尚未永久刪除，仍嘗試讀出並建立備份。
+      const sourceFile=DriveApp.getFileById(sourceFileId);
+      const blob=sourceFile.getBlob();
+
+      backupFile=ctx.folders.imageBackups.createFile(blob);
+      backupFile.setName(
+        `backup_${imageId}.${imageBackupExtension_(
+          meta.mimeType||blob.getContentType()
+        )}`
+      );
+      created=true;
+    }
+
+    const backedUpAt=created || !existingBackedUpAt
+      ? isoNow_()
+      : existingBackedUpAt;
+
+    const details={
+      backupFileId:backupFile.getId(),
+      backedUpAt,
+      deletedAt:meta.deletedAt||'',
+      lastError:''
+    };
+    const logUpdated=
+      !imageBackupLogIsCurrent_(ctx,existing,meta,details);
+
+    // 已存在且 metadata 沒變時不重寫試算表，降低大量圖片的服務呼叫數。
+    if(logUpdated) writeImageBackupLog_(ctx,meta,details);
+
+    return {
+      imageId,
+      backupFileId:backupFile.getId(),
+      created,
+      logUpdated
+    };
+  } catch(err) {
+    writeImageBackupLog_(ctx,meta,{
+      backupFileId:backupFile ? backupFile.getId() : '',
+      backedUpAt:existingBackedUpAt,
+      deletedAt:meta.deletedAt||'',
+      lastError:String(err.message||err)
+    });
+    throw err;
+  }
+}
+
+function backupFoodImagesBatch_(state,executionStartedAt) {
+  const ctx=createImageBackupContext_();
+  const images=rows_(SHEETS.FOOD_IMAGES);
+  const candidates=images.filter(image=>
+    String(image.status||'')!=='pending' ||
+    Boolean(String(image.foodId||''))
+  );
+  const startedAt=Number(executionStartedAt||Date.now());
+  let nextIndex=Math.max(0,Number(state.nextIndex||0));
+  nextIndex=Math.min(nextIndex,candidates.length);
+  let batchProcessed=0;
+
+  state.totalCandidates=candidates.length;
+  state.skippedUnattachedPending=images.length-candidates.length;
+
+  while(nextIndex<candidates.length) {
+    if(
+      batchProcessed>=IMAGE_BACKUP_MAX_ITEMS_PER_BATCH ||
+      (
+        batchProcessed>0 &&
+        Date.now()-startedAt>=IMAGE_BACKUP_BATCH_TIME_BUDGET_MS
+      )
+    ) {
+      break;
+    }
+
+    const image=candidates[nextIndex];
+
+    if(image.imageId && image.driveFileId) {
+      try {
+        const result=ensureFoodImageBackup_(image,ctx);
+        if(result.created) state.created++;
+        else state.alreadyBackedUp++;
+      } catch(err) {
+        state.errors++;
+        console.error(
+          'Image backup failed '+String(image.imageId)+': '+
+          String(err.message||err)
+        );
+      }
+    }
+
+    nextIndex++;
+    batchProcessed++;
+    state.processed++;
+    state.nextIndex=nextIndex;
+
+    // 週期性存檔可防範 Apps Script 或 Drive 服務意外中止；重跑仍具冪等性。
+    if(batchProcessed%10===0) saveImageBackupRunState_(state);
+  }
+
+  state.nextIndex=nextIndex;
+  const complete=nextIndex>=candidates.length;
+  const summary={
+    ok:state.errors===0,
+    complete,
+    checked:state.processed,
+    totalCandidates:candidates.length,
+    remaining:Math.max(0,candidates.length-nextIndex),
+    batchProcessed,
+    skippedUnattachedPending:state.skippedUnattachedPending,
+    created:state.created,
+    alreadyBackedUp:state.alreadyBackedUp,
+    errors:state.errors,
+    folderId:ctx.folders.imageBackups.getId(),
+    startedAt:state.startedAt
+  };
+
+  return {state,summary,complete};
+}
+
+// 相容既有的手動測試入口；正式排程請由 weeklyBackupAndMaintenance 啟動，
+// 才會在未完成時自動建立續跑 Trigger。
+function backupFoodImages_() {
+  return backupFoodImagesBatch_(
+    newImageBackupRunState_(),
+    Date.now()
+  ).summary;
+}
+
+function cleanupExpiredImageBackups_() {
+  const ctx=createImageBackupContext_();
+  const values=ctx.sh.getDataRange().getValues();
+  const cutoff=
+    Date.now()-IMAGE_BACKUP_RETENTION_DAYS*86400000;
+  let trashed=0;
+  let rowsRemoved=0;
+
+  for(let r=values.length-1;r>=1;r--) {
+    const status=String(
+      values[r][ctx.idx.sourceStatus]||''
+    );
+    const deletedAt=toMillis_(
+      values[r][ctx.idx.deletedAt]
+    );
+
+    if(
+      status!=='pending_delete' ||
+      !deletedAt ||
+      deletedAt>=cutoff
+    ) {
+      continue;
+    }
+
+    const backupFileId=String(
+      values[r][ctx.idx.backupFileId]||''
+    );
+
+    if(backupFileId) {
+      try {
+        const file=DriveApp.getFileById(backupFileId);
+        if(!file.isTrashed()) {
+          file.setTrashed(true);
+          trashed++;
+        }
+      } catch(err) {
+        // 檔案若已不存在，仍移除過期 Log；其他錯誤會留在執行記錄。
+        console.warn(
+          'Expired image backup cleanup '+backupFileId+': '+
+          String(err.message||err)
+        );
+      }
+    }
+
+    ctx.sh.deleteRow(r+1);
+    rowsRemoved++;
+  }
+
+  return {
+    trashed,
+    rowsRemoved,
+    retentionDays:IMAGE_BACKUP_RETENTION_DAYS
+  };
+}
+
+// 災難復原工具：傳入 imageId 可還原單張圖片。
+// 會保留備份檔，並在 FoodImages 建立新的正式 Drive 檔案參照。
+function restoreFoodImageFromBackup(imageId) {
+  imageId=String(imageId||'').trim();
+  if(!imageId) throw new Error('請提供 imageId');
+
+  const ctx=createImageBackupContext_();
+  const entry=ctx.entries[imageId];
+  if(!entry) throw new Error('找不到這張圖片的備份記錄');
+
+  const backupFileId=String(
+    entry.values[ctx.idx.backupFileId]||''
+  );
+  const backupFile=getAvailableDriveFile_(backupFileId);
+  if(!backupFile) throw new Error('圖片備份檔不存在或已刪除');
+
+  const sh=sheet_(SHEETS.FOOD_IMAGES);
+  const values=sh.getDataRange().getValues();
+  const headers=values[0].map(String);
+  const idx={};
+  headers.forEach((h,i)=>idx[h]=i);
+
+  for(let r=1;r<values.length;r++) {
+    if(String(values[r][idx.imageId]||'')!==imageId) continue;
+
+    const currentFileId=String(
+      values[r][idx.driveFileId]||''
+    );
+    const currentFile=getAvailableDriveFile_(currentFileId);
+
+    if(currentFile) {
+      return {
+        ok:true,
+        restored:false,
+        reason:'原始圖片仍可使用',
+        imageId,
+        driveFileId:currentFile.getId()
+      };
+    }
+
+    const mimeType=String(
+      values[r][idx.mimeType] ||
+      entry.values[ctx.idx.mimeType] ||
+      backupFile.getBlob().getContentType() ||
+      'image/jpeg'
+    );
+    const familyId=String(values[r][idx.familyId]||'');
+    const restoredFile=ctx.folders.images.createFile(
+      backupFile.getBlob()
+    );
+
+    restoredFile.setName(
+      `food_${familyId}_${imageId}.${imageBackupExtension_(mimeType)}`
+    );
+
+    const referenced=rows_(SHEETS.FOODS).some(f=>
+      String(f.imageId||'')===imageId
+    );
+    const status=referenced ? 'active' : 'pending';
+    const now=isoNow_();
+
+    sh.getRange(r+1,idx.driveFileId+1)
+      .setValue(restoredFile.getId());
+    sh.getRange(r+1,idx.status+1)
+      .setValue(status);
+    sh.getRange(r+1,idx.updatedAt+1)
+      .setValue(now);
+    sh.getRange(r+1,idx.deletedAt+1)
+      .setValue('');
+
+    const meta={};
+    headers.forEach((h,i)=>{
+      meta[h]=normalizeCell_(values[r][i],h);
+    });
+    meta.driveFileId=restoredFile.getId();
+    meta.status=status;
+    meta.deletedAt='';
+
+    writeImageBackupLog_(ctx,meta,{
+      backupFileId,
+      backedUpAt:String(
+        entry.values[ctx.idx.backedUpAt]||now
+      ),
+      deletedAt:'',
+      lastError:''
+    });
+
+    return {
+      ok:true,
+      restored:true,
+      imageId,
+      driveFileId:restoredFile.getId(),
+      status
+    };
+  }
+
+  throw new Error('FoodImages 找不到這張圖片的 metadata');
+}
+
+// 可直接從 Apps Script 編輯器手動執行；只修復狀態為 active、
+// 但正式 Drive 檔案已遺失或在垃圾桶的圖片。
+function restoreMissingFoodImagesFromBackups() {
+  const missing=rows_(SHEETS.FOOD_IMAGES).filter(image=>
+    String(image.status||'')==='active' &&
+    !getAvailableDriveFile_(image.driveFileId)
+  );
+  const results=[];
+  let restored=0;
+  let errors=0;
+
+  for(const image of missing) {
+    try {
+      const result=restoreFoodImageFromBackup(image.imageId);
+      results.push(result);
+      if(result.restored) restored++;
+    } catch(err) {
+      errors++;
+      results.push({
+        ok:false,
+        imageId:String(image.imageId||''),
+        error:String(err.message||err)
+      });
+    }
+  }
+
+  const summary={
+    ok:errors===0,
+    missing:missing.length,
+    restored,
+    errors,
+    results
+  };
+
+  Logger.log(JSON.stringify(summary));
+  return summary;
 }
 
 function cleanupTransientData_() {
@@ -1473,6 +3384,20 @@ function cleanupTransientData_() {
         time <
           now -
           NOTIFY_LOG_RETENTION_DAYS*86400000;
+    }
+  );
+
+  // ActivityLog 與 NotificationLog 同樣保留 90 天，
+  // 每週維護會先建立完整備份，再刪除超過保留期的資料。
+  result.activityLog=deleteRowsWhere_(
+    SHEETS.ACTIVITY,
+    row => {
+      const time=toMillis_(row.createdAt);
+
+      return time &&
+        time <
+          now -
+          ACTIVITY_LOG_RETENTION_DAYS*86400000;
     }
   );
 
@@ -1858,6 +3783,25 @@ function markImagePendingDelete_(
       values[r][idx.driveFileId]||''
     );
 
+    const now=isoNow_();
+    const backupMeta={};
+    headers.forEach((h,i)=>{
+      backupMeta[h]=normalizeCell_(values[r][i],h);
+    });
+    backupMeta.status='pending_delete';
+    backupMeta.deletedAt=now;
+
+    // 正式使用過的圖片在進入垃圾桶前，至少要有一份可用備份。
+    // 從未綁定食品、被使用者取消的暫存圖片不占用備份空間。
+    const shouldBackup=
+      currentStatus==='active' ||
+      Boolean(String(values[r][idx.foodId]||''));
+
+    if(shouldBackup) {
+      // 若備份失敗就中止刪除，避免只留下無法還原的 metadata。
+      ensureFoodImageBackup_(backupMeta);
+    }
+
     if(fileId) {
       try {
         DriveApp.getFileById(fileId)
@@ -1870,8 +3814,6 @@ function markImagePendingDelete_(
         );
       }
     }
-
-    const now=isoNow_();
 
     sh.getRange(r+1,idx.status+1)
       .setValue('pending_delete');
@@ -1950,6 +3892,21 @@ function getOrCreateStorageFolders_() {
     );
   }
 
+  let imageBackups=getFolderByProperty_(
+    'IMAGE_BACKUP_FOLDER_ID'
+  );
+
+  if(!imageBackups) {
+    imageBackups=root.createFolder(
+      'ImageBackups'
+    );
+
+    props.setProperty(
+      'IMAGE_BACKUP_FOLDER_ID',
+      imageBackups.getId()
+    );
+  }
+
   let backups=getFolderByProperty_(
     'BACKUP_FOLDER_ID'
   );
@@ -1968,6 +3925,7 @@ function getOrCreateStorageFolders_() {
   return {
     root,
     images,
+    imageBackups,
     backups
   };
 }
